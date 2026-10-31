@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/magpie-community/plugins.git",
+  "branch": "main",
+  "directory": "packages/devin",
+  "commit": "b5cc78266f6dfc7e8b9764226a810b74b9f20b9c",
+  "package": "@magpie-community/opencode-devin-auth",
+  "version": "0.1.27",
+  "index_sha256": "fb635ec756ceeb4365a920c9e334554aac35bffb8521322980277cddd789bf01",
+  "provider_id": "devin"
+}

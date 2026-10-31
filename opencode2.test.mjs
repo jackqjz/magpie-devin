@@ -97,7 +97,7 @@ test("v2Chat maps system, user and assistant parts", () => {
   expect(chat.messages).toEqual([
     { role: "system", content: "be terse" },
     { role: "user", content: [{ type: "text", text: "hi" }] },
-    { role: "assistant", content: "checking", tool_calls: [{ id: "c1", type: "function", function: { name: "Bash", arguments: '{"command":"date"}' } }] },
+    { role: "assistant", content: "checking", devin_thinking: [], tool_calls: [{ id: "c1", type: "function", function: { name: "Bash", arguments: '{"command":"date"}' } }] },
   ])
 })
 
@@ -292,7 +292,8 @@ test("an account switch between calls goes out on the new account", async () => 
   await lang.doGenerate({ prompt: [] })
   current = { type: "api", key: "account-b", metadata: {} }
   await lang.doGenerate({ prompt: [] })
-  expect(seen).toEqual(["Basic account-a", "Basic account-b"])
+  // Native CLI authentication repeats the current credential on either side of the separator.
+  expect(seen).toEqual(["Basic account-a-account-a", "Basic account-b-account-b"])
 })
 
 // ---- setup -----------------------------------------------------------------

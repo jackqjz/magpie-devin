@@ -1,12 +1,37 @@
 {
-  "name": "@magpie-community/opencode-devin-auth",
-  "version": "0.1.27",
-  "description": "Devin subscriptions (the devin CLI's account) in OpenCode and magpie",
+  "name": "@jackqjz/magpie-devin",
+  "version": "0.1.27-jackqjz.1",
+  "description": "Personally maintained devin plugin for Magpie with verified protocol fixes",
   "type": "module",
   "main": "./index.mjs",
   "exports": "./index.mjs",
-  "files": ["index.mjs", "README.md"],
-  "keywords": ["opencode", "opencode-plugin", "magpie", "devin", "windsurf"],
+  "files": [
+    "index.mjs",
+    "README.md",
+    "NOTICE.md",
+    "LICENSE",
+    "UPSTREAM.json",
+    "UPSTREAM_README.md",
+    "VALIDATION.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "devin",
+    "windsurf"
+  ],
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/magpie-community/plugins.git", "directory": "packages/devin" }
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jackqjz/magpie-devin.git"
+  },
+  "homepage": "https://github.com/jackqjz/magpie-devin#readme",
+  "bugs": {
+    "url": "https://github.com/jackqjz/magpie-devin/issues"
+  },
+  "scripts": {
+    "test": "python3 scripts/test.py",
+    "upstream:compare": "python3 scripts/compare-upstream.py"
+  }
 }

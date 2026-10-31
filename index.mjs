@@ -6,7 +6,7 @@
 // (internal/provider/devin*.go, internal/gateway/devin.go).
 
 import { Buffer } from "node:buffer"
-import { createHash, randomBytes, randomUUID } from "node:crypto"
+import { createHash, createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto"
 import { createServer, STATUS_CODES } from "node:http"
 import { gunzipSync, gzipSync } from "node:zlib"
 import { spawn } from "node:child_process"
@@ -17,6 +17,14 @@ import { isAbsolute, join, relative, resolve } from "node:path"
 
 const ID = "devin"
 const CHAT = "@ai-sdk/openai-compatible"
+const ANTHROPIC = "@ai-sdk/anthropic"
+const RESPONSES = "@ai-sdk/openai"
+const claudeModel = (id) => /^claude[-_]/i.test(bare(id))
+// SWE-2's native CLI also replays signed reasoning, with origin "sealed".
+// Responses carries this provider state without labelling it Anthropic.
+const sweModel = (id) => /^swe-2(?:-|$)/i.test(bare(id))
+const modelNpm = (id) => (claudeModel(id) ? ANTHROPIC : sweModel(id) ? RESPONSES : CHAT)
+const modelEffort = (id, effort) => (claudeModel(id) ? { effort } : { reasoningEffort: effort })
 
 const SERVER = "https://server.codeium.com"
 const AUTHORIZE = "https://app.devin.ai/auth/cli/continue"
@@ -552,13 +560,14 @@ function configModel(m) {
   return {
     id: m.id,
     name: m.name,
+    provider: { npm: modelNpm(m.id), api: BASE },
     tool_call: true,
     reasoning: m.efforts.length > 0,
     attachment: image,
     temperature: true,
     modalities: { input: image ? ["text", "image"] : ["text"], output: ["text"] },
     limit: { context: m.context, output: m.output },
-    ...(m.efforts.length ? { variants: Object.fromEntries(m.efforts.map((e) => [e, { reasoningEffort: e }])) } : {}),
+    ...(m.efforts.length ? { variants: Object.fromEntries(m.efforts.map((e) => [e, modelEffort(m.id, e)])) } : {}),
   }
 }
 
@@ -568,7 +577,7 @@ function runtimeModel(m) {
     id: m.id,
     providerID: ID,
     name: m.name,
-    api: { id: m.id, url: BASE, npm: CHAT },
+    api: { id: m.id, url: BASE, npm: modelNpm(m.id) },
     status: "active",
     headers: {},
     options: {},
@@ -584,7 +593,7 @@ function runtimeModel(m) {
       interleaved: false,
     },
     release_date: "",
-    variants: Object.fromEntries(m.efforts.map((e) => [e, { reasoningEffort: e }])),
+    variants: Object.fromEntries(m.efforts.map((e) => [e, modelEffort(m.id, e)])),
     // magpie's: a model the account's quota doesn't count
     ...(m.free ? { free: true } : {}),
   }
@@ -1192,12 +1201,21 @@ function joinSplitCalls(msgs) {
     const prev = out.at(-1)
     if (m?.role === "assistant" && prev?.role === "assistant" && prev.tool_calls?.length) {
       const content = [textOf(prev.content), textOf(m.content)].filter(Boolean).join("\n\n")
-      out[out.length - 1] = { ...prev, content, tool_calls: [...prev.tool_calls, ...(m.tool_calls ?? [])] }
+      out[out.length - 1] = { ...prev, content, devin_thinking: [...signedThinking(prev), ...signedThinking(m)], tool_calls: [...prev.tool_calls, ...(m.tool_calls ?? [])] }
       continue
     }
     out.push(m)
   }
   return out
+}
+
+// Keep each signed thought as a unit. Never join two signatures or guess a
+// signature for plain reasoning text. devin_thinking is the plugin's own
+// internal representation; the Messages adapter exposes ordinary thinking
+// blocks, so magpie can seal them for a Responses client such as Codex.
+function signedThinking(m) {
+  const blocks = m.devin_thinking ?? [{ text: m.reasoning_content, signature: m.reasoning_signature, origin: m.reasoning_origin }]
+  return blocks.filter((b) => typeof b?.text === "string" && typeof b.signature === "string" && b.signature && typeof b.origin === "string" && b.origin)
 }
 
 // effortOf is the effort a request names, as magpie reads it.
@@ -1487,9 +1505,14 @@ function build(chat, uid, key) {
     if (m.role === "assistant") {
       const calls = (m.tool_calls ?? []).map((c) => ({ id: inID(c.id), name: c.function?.name, args: argsOf(c.function?.arguments) }))
       const text = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter((p) => p?.type === "text" && p.text).map((p) => p.text).join("\n\n") : ""
-      if (!text && !calls.length) continue // a turn that only thought, or failed
+      const thinking = signedThinking(m)
+      if (!text && !calls.length && !thinking.length) continue
       answer()
-      msgs.push({ role: ASSISTANT, text, calls })
+      // Protobuf's thought/signature/origin fields are singular. An API
+      // caller with several signed blocks gets one message per block,
+      // retaining their order and attaching text/calls to the last one.
+      for (const thought of thinking.slice(0, -1)) msgs.push({ role: ASSISTANT, thinking: thought })
+      msgs.push({ role: ASSISTANT, text, calls, thinking: thinking.at(-1) })
       // a copy: answering a call takes it off pending, never off the
       // reply that made it, which goes to Devin with every call it made
       pending = [...calls]
@@ -1597,6 +1620,7 @@ function encodeMsg(m) {
   for (const c of m.calls ?? []) b.bytes(6, new PB().str(1, c.id ?? "").str(2, c.name ?? "").bytes(3, c.args))
   if (m.callID) b.str(7, m.callID)
   for (const p of m.images ?? []) b.bytes(10, new PB().str(1, p.data).str(2, p.type))
+  if (m.thinking) b.str(11, m.thinking.text).str(12, m.thinking.signature).str(18, m.thinking.origin)
   return b.done()
 }
 
@@ -1641,6 +1665,14 @@ async function* events(it) {
   let stop = 0
   let said = 0
   const usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 }
+  let thought = { text: "", signature: "", origin: "" }
+  let signed = false
+  const endThought = () => {
+    const value = thought.signature ? { signed: thought } : null
+    if (value) signed = true
+    thought = { text: "", signature: "", origin: "" }
+    return value
+  }
   for (;;) {
     let r
     try {
@@ -1661,12 +1693,28 @@ async function* events(it) {
     }
     for (const x of fields(f.data)) {
       if (x.num === 3 && x.wire === 2 && x.data.length) {
+        // SWE's signature can follow visible text. Keep the preceding
+        // thought until its signature arrives; Claude signs before text.
+        const prior = thought.signature ? endThought() : null
+        if (prior) yield prior
         said += x.data.length
         yield { text: dec.decode(x.data) }
       } else if (x.num === 9 && x.wire === 2 && x.data.length) {
+        if (thought.signature) {
+          const prior = endThought()
+          if (prior) yield prior
+        }
         said += x.data.length
-        yield { reasoning: dec.decode(x.data) }
+        const text = dec.decode(x.data)
+        thought.text += text
+        yield { reasoning: text }
+      } else if (x.num === 10 && x.wire === 2 && x.data.length) {
+        thought.signature += dec.decode(x.data)
+      } else if (x.num === 21 && x.wire === 2 && x.data.length) {
+        thought.origin = dec.decode(x.data)
       } else if (x.num === 6 && x.wire === 2) {
+        const prior = thought.signature ? endThought() : null
+        if (prior) yield prior
         let id = ""
         let name = ""
         let args = ""
@@ -1692,7 +1740,9 @@ async function* events(it) {
       }
     }
   }
-  if (!said && tools < 0) {
+  const prior = endThought()
+  if (prior) yield prior
+  if (!said && tools < 0 && !signed) {
     yield { error: { status: 502, message: "an empty reply (Devin returned no text, reasoning or tool call)" } }
     return
   }
@@ -1733,7 +1783,7 @@ async function roundtrip({ key, server, families }, chat, signal) {
   try {
     res = await fetch(server + CHAT_RPC, {
       method: "POST",
-      headers: { "Content-Type": "application/connect+proto", "Connect-Protocol-Version": "1", ...(body[0] & 1 ? { "Connect-Content-Encoding": "gzip" } : {}), Authorization: "Basic " + key },
+      headers: { "Content-Type": "application/connect+proto", "Connect-Protocol-Version": "1", ...(body[0] & 1 ? { "Connect-Content-Encoding": "gzip" } : {}), Authorization: `Basic ${key}-${key}` },
       body,
       signal,
     })
@@ -1777,6 +1827,7 @@ async function complete({ key, server, families }, chat, signal) {
   if (!chat.stream) {
     const msg = { role: "assistant", content: "" }
     let reasoning = ""
+    const thinking = []
     const calls = []
     let stop = "stop"
     let usage
@@ -1784,11 +1835,21 @@ async function complete({ key, server, families }, chat, signal) {
       if (e.error) return errorResponse(e.error)
       if (e.text) msg.content += e.text
       if (e.reasoning) reasoning += e.reasoning
+      if (e.signed) thinking.push(e.signed)
       if (e.tool) calls.push({ id: e.tool.id, type: "function", function: { name: e.tool.name, arguments: "" } })
       if (e.args) calls[e.args.index].function.arguments += e.args.text
       if (e.stop) [stop, usage] = [e.stop, e.usage]
     }
     if (reasoning) msg.reasoning_content = reasoning
+    if (thinking.length) {
+      msg.devin_thinking = thinking
+      if (thinking.length === 1) {
+        msg.reasoning_signature = thinking[0].signature
+        msg.reasoning_origin = thinking[0].origin
+        // The signed text, including an empty string, is authoritative.
+        msg.reasoning_content = thinking[0].text
+      }
+    }
     if (calls.length) msg.tool_calls = calls
     return Response.json({ id, object: "chat.completion", created, model: chat.model, choices: [{ index: 0, message: msg, finish_reason: stop }], usage }, { headers: { "X-Magpie-Sign-In": "kept" } })
   }
@@ -1810,6 +1871,7 @@ async function complete({ key, server, families }, chat, signal) {
       const e = r.value
       if (e.text) ctl.enqueue(chunk({ content: e.text }))
       else if (e.reasoning) ctl.enqueue(chunk({ reasoning_content: e.reasoning }))
+      else if (e.signed) ctl.enqueue(chunk({ devin_thinking: [e.signed], reasoning_signature: e.signed.signature, reasoning_origin: e.signed.origin }))
       else if (e.tool) ctl.enqueue(chunk({ tool_calls: [{ index: e.tool.index, id: e.tool.id, type: "function", function: { name: e.tool.name, arguments: "" } }] }))
       else if (e.args) ctl.enqueue(chunk({ tool_calls: [{ index: e.args.index, function: { arguments: e.args.text } }] }))
       else if (e.stop) ctl.enqueue(chunk({}, e.stop, { usage: e.usage }))
@@ -1823,6 +1885,421 @@ async function complete({ key, server, families }, chat, signal) {
     },
   })
   return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Magpie-Sign-In": "kept" } })
+}
+
+// ---- SWE-2's Responses interface ------------------------------------------------------
+
+// The provider's signed state belongs in an opaque Responses reasoning
+// item. Seal the original triple locally, scoped to the signed-in account,
+// so a restart needs no cache and a different account cannot replay it.
+// This envelope is never sent to Devin: build() sends the original fields.
+const STATE_AAD = Buffer.from("magpie-devin-reasoning-v1")
+const stateKey = (key) => createHash("sha256").update(STATE_AAD).update("\0").update(key).digest()
+function sealThinking(thought, key) {
+  const nonce = randomBytes(12)
+  const cipher = createCipheriv("aes-256-gcm", stateKey(key), nonce)
+  cipher.setAAD(STATE_AAD)
+  const body = Buffer.concat([cipher.update(JSON.stringify(thought), "utf8"), cipher.final()])
+  return "dvrs1_" + Buffer.concat([nonce, cipher.getAuthTag(), body]).toString("base64url")
+}
+function openThinking(value, key) {
+  if (typeof value !== "string" || !value.startsWith("dvrs1_")) throw new Error("reasoning state is not from this Devin plugin")
+  try {
+    const raw = Buffer.from(value.slice(6), "base64url")
+    if (raw.length < 29) throw new Error("short state")
+    const cipher = createDecipheriv("aes-256-gcm", stateKey(key), raw.subarray(0, 12))
+    cipher.setAAD(STATE_AAD)
+    cipher.setAuthTag(raw.subarray(12, 28))
+    const b = JSON.parse(Buffer.concat([cipher.update(raw.subarray(28)), cipher.final()]).toString("utf8"))
+    if (typeof b.text !== "string" || typeof b.signature !== "string" || !b.signature || typeof b.origin !== "string" || !b.origin) throw new Error("bad state")
+    return b
+  } catch {
+    throw new Error("Devin reasoning state is damaged or belongs to another account")
+  }
+}
+
+const responseFlatName = (namespace, name) => {
+  const flat = namespace + "__" + name
+  return flat.length <= 64 ? flat : flat.slice(0, 55) + "_" + createHash("sha256").update(namespace + "\0" + name).digest("hex").slice(0, 8)
+}
+// Match magpie's existing lowering of Codex's function, namespace,
+// free-form and client tool-search definitions (gateway/responses.go).
+function responseTools(req) {
+  const tools = [], named = new Map()
+  const lower = (t, namespace = "") => {
+    if (t.type === "namespace") { for (const child of t.tools ?? []) lower(child, t.name); return }
+    if (t.type === "tool_search" && t.execution !== "client") throw new Error("Devin requires client tool search")
+    if (!["function", "custom", "tool_search"].includes(t.type)) throw new Error(`unsupported Devin Responses tool: ${t.type}`)
+    const name = t.type === "tool_search" ? "tool_search" : t.name
+    if (!name) throw new Error("Devin tool has no name")
+    const flat = namespace ? responseFlatName(namespace, name) : name
+    if (named.has(flat)) return
+    named.set(flat, { type: t.type, name, namespace })
+    let description = t.description ?? "", schema = t.parameters
+    if (t.type === "custom") {
+      schema = { type: "object", properties: { input: { type: "string", description: "The complete free-form input, exactly as it is to be run." } }, required: ["input"], additionalProperties: false }
+      description += "\n\nPut the tool's complete free-form input in the input string. It is passed on as written."
+      if (t.format?.type === "grammar") description += `\n\nInput follows this ${t.format.syntax || ""} grammar:\n${t.format.definition ?? ""}`
+    }
+    tools.push({ type: "function", function: { name: flat, description, parameters: schema } })
+  }
+  for (const t of req.tools ?? []) lower(t)
+  for (const item of Array.isArray(req.input) ? req.input : []) if (item.type === "tool_search_output") for (const t of item.tools ?? []) lower(t)
+  return { tools, named }
+}
+
+function responsesChat(req, key) {
+  const lowered = responseTools(req)
+  const messages = []
+  if (req.instructions) messages.push({ role: "system", content: req.instructions })
+  let assistant = null
+  const flush = () => { if (assistant) messages.push(assistant); assistant = null }
+  const reply = () => (assistant ??= { role: "assistant", content: [], tool_calls: [], devin_thinking: [] })
+  const content = (c) => typeof c === "string" ? [{ type: "text", text: c }] : (c ?? []).map((p) => {
+    if (["input_text", "output_text", "text"].includes(p.type)) return { type: "text", text: p.text ?? "" }
+    if (p.type === "input_image" && typeof p.image_url === "string") return { type: "image_url", image_url: { url: p.image_url } }
+    throw new Error(`unsupported Devin Responses content: ${p.type}`)
+  })
+  const input = typeof req.input === "string" ? [{ role: "user", content: req.input }] : req.input ?? []
+  for (const item of input) {
+    if (item.type === "reasoning") {
+      // A foreign/unsigned summary alone is no native signed context.
+      if (item.encrypted_content) reply().devin_thinking.push(openThinking(item.encrypted_content, key))
+    } else if (["function_call", "custom_tool_call", "tool_search_call"].includes(item.type)) {
+      const name = item.type === "tool_search_call" ? "tool_search" : item.namespace ? responseFlatName(item.namespace, item.name) : item.name
+      const args = item.type === "custom_tool_call" ? JSON.stringify({ input: item.input ?? "" }) : typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments ?? {})
+      reply().tool_calls.push({ id: item.call_id, type: "function", function: { name, arguments: args } })
+    } else if (["function_call_output", "custom_tool_call_output", "tool_search_output"].includes(item.type)) {
+      flush()
+      const output = item.type === "tool_search_output" ? "Available tools: " + (item.tools ?? []).flatMap((t) => t.type === "namespace" ? (t.tools ?? []).map((c) => responseFlatName(t.name, c.name)) : [t.name]).join(", ") : item.output
+      messages.push({ role: "tool", tool_call_id: item.call_id, content: content(output) })
+    } else if (!item.type || item.type === "message") {
+      if (item.role === "assistant") reply().content.push(...content(item.content))
+      else {
+        flush()
+        messages.push({ role: item.role, content: content(item.content) })
+      }
+    } else throw new Error(`unsupported Devin Responses input: ${item.type}`)
+  }
+  flush()
+  return {
+    model: req.model, messages, stream: req.stream, max_completion_tokens: req.max_output_tokens,
+    reasoning_effort: req.reasoning?.effort, temperature: req.temperature, top_p: req.top_p,
+    response_format: req.text?.format,
+    tools: lowered.tools,
+    ...(req.tool_choice === "none" ? { tool_choice: "none" } : {}),
+  }
+}
+
+async function* responsesEvents(it, model, key, named = new Map()) {
+  const response = { id: "resp_" + randomBytes(12).toString("hex"), object: "response", created_at: Math.floor(Date.now() / 1000),
+    model, status: "in_progress", output: [], error: null, incomplete_details: null }
+  let sequence = 0
+  const event = (type, data) => ({ type, sequence_number: sequence++, ...data })
+  yield event("response.created", { response: structuredClone(response) })
+  yield event("response.in_progress", { response: structuredClone(response) })
+  let current = null, index = -1, call = -1, thinking = "", callArgs = ""
+  function* finishItem() {
+    if (!current) return
+    if (current.type === "reasoning" && current.summary.length) {
+      yield event("response.reasoning_summary_text.done", { item_id: current.id, output_index: index, summary_index: 0, text: current.summary[0].text })
+      yield event("response.reasoning_summary_part.done", { item_id: current.id, output_index: index, summary_index: 0, part: current.summary[0] })
+    } else if (current.type === "message") {
+      yield event("response.output_text.done", { item_id: current.id, output_index: index, content_index: 0, text: current.content[0].text })
+      yield event("response.content_part.done", { item_id: current.id, output_index: index, content_index: 0, part: current.content[0] })
+    } else if (current.type === "function_call") {
+      yield event("response.function_call_arguments.done", { item_id: current.id, output_index: index, arguments: current.arguments })
+    } else if (current.type === "custom_tool_call") {
+      const parsed = JSON.parse(callArgs || "{}")
+      current.input = typeof parsed === "string" ? parsed : typeof parsed.input === "string" ? parsed.input : callArgs
+      yield event("response.custom_tool_call_input.delta", { item_id: current.id, output_index: index, delta: current.input })
+      yield event("response.custom_tool_call_input.done", { item_id: current.id, output_index: index, input: current.input })
+    } else if (current.type === "tool_search_call") {
+      current.arguments = JSON.parse(callArgs || "{}")
+      yield event("response.function_call_arguments.done", { item_id: current.id, output_index: index, arguments: callArgs })
+    }
+    current.status = "completed"
+    response.output.push(current)
+    yield event("response.output_item.done", { output_index: index, item: current })
+    current = null
+  }
+  function* openItem(item) {
+    yield* finishItem()
+    current = { ...item, status: "in_progress" }
+    index++
+    yield event("response.output_item.added", { output_index: index, item: structuredClone(current) })
+  }
+  for await (const e of it) {
+    if (e.error) throw Object.assign(new Error(e.error.message), { status: e.error.status })
+    if (e.reasoning) {
+      thinking += e.reasoning
+      if (current?.type !== "reasoning" || current.encrypted_content) yield* openItem({ type: "reasoning", id: "rs_" + randomBytes(12).toString("hex"), summary: [] })
+      if (!current.summary.length) {
+        current.summary.push({ type: "summary_text", text: "" })
+        yield event("response.reasoning_summary_part.added", { item_id: current.id, output_index: index, summary_index: 0, part: structuredClone(current.summary[0]) })
+      }
+      current.summary[0].text += e.reasoning
+      yield event("response.reasoning_summary_text.delta", { item_id: current.id, output_index: index, summary_index: 0, delta: e.reasoning })
+    } else if (e.signed) {
+      if (!e.signed.origin) throw new Error("Devin returned signed thinking without its origin")
+      if (thinking !== e.signed.text) throw new Error("Devin's signed thinking does not match its streamed text")
+      thinking = ""
+      if (current?.type !== "reasoning") yield* openItem({ type: "reasoning", id: "rs_" + randomBytes(12).toString("hex"), summary: [] })
+      current.encrypted_content = sealThinking(e.signed, key)
+      yield* finishItem()
+    } else if (e.text) {
+      if (current?.type !== "message") {
+        yield* openItem({ type: "message", id: "msg_" + randomBytes(12).toString("hex"), role: "assistant", content: [{ type: "output_text", text: "", annotations: [] }] })
+        yield event("response.content_part.added", { item_id: current.id, output_index: index, content_index: 0, part: structuredClone(current.content[0]) })
+      }
+      current.content[0].text += e.text
+      yield event("response.output_text.delta", { item_id: current.id, output_index: index, content_index: 0, delta: e.text })
+    } else if (e.tool) {
+      call = e.tool.index
+      // Close the prior custom call before resetting its buffered input.
+      yield* finishItem()
+      callArgs = ""
+      const info = named.get(e.tool.name)
+      if (info?.type === "custom") yield* openItem({ type: "custom_tool_call", id: "ctc_" + randomBytes(12).toString("hex"), call_id: e.tool.id, name: info.name, ...(info.namespace ? { namespace: info.namespace } : {}), input: "" })
+      else if (info?.type === "tool_search") yield* openItem({ type: "tool_search_call", id: "tsc_" + randomBytes(12).toString("hex"), call_id: e.tool.id, execution: "client", arguments: {} })
+      else yield* openItem({ type: "function_call", id: "fc_" + randomBytes(12).toString("hex"), call_id: e.tool.id, name: info?.name ?? e.tool.name,
+        ...(info?.namespace ? { namespace: info.namespace, encrypted_function_args: [] } : {}), arguments: "" })
+    } else if (e.args) {
+      if (!["function_call", "custom_tool_call", "tool_search_call"].includes(current?.type) || e.args.index !== call) throw new Error("Devin returned arguments outside their tool call")
+      callArgs += e.args.text
+      if (current.type === "function_call") current.arguments += e.args.text
+      if (current.type !== "custom_tool_call") yield event("response.function_call_arguments.delta", { item_id: current.id, output_index: index, delta: e.args.text })
+    } else if (e.stop) {
+      yield* finishItem()
+      response.status = e.stop === "length" ? "incomplete" : "completed"
+      if (e.stop === "length") response.incomplete_details = { reason: "max_output_tokens" }
+      response.usage = { input_tokens: e.usage.prompt_tokens, output_tokens: e.usage.completion_tokens, total_tokens: e.usage.total_tokens,
+        input_tokens_details: { cached_tokens: e.usage.prompt_tokens_details?.cached_tokens ?? 0 } }
+      yield event(e.stop === "length" ? "response.incomplete" : "response.completed", { response })
+      return
+    }
+  }
+}
+
+async function completeResponses(auth, req, signal) {
+  let chat
+  try { chat = responsesChat(req, auth.key) }
+  catch (e) { return errorResponse({ status: 400, message: e.message }) }
+  const rt = await roundtrip(auth, chat, signal)
+  if (!rt.it) return errorResponse(rt)
+  const it = responsesEvents(rt.it, req.model, auth.key, responseTools(req).named)
+  if (!req.stream) {
+    try {
+      for await (const e of it) if (["response.completed", "response.incomplete"].includes(e.type)) return Response.json(e.response, { headers: { "X-Magpie-Sign-In": "kept" } })
+      return errorResponse({ status: 502, message: "Devin's reply ended before completion" })
+    } catch (e) { return errorResponse({ status: e.status ?? 502, message: e.message }) }
+  }
+  const stream = new ReadableStream({
+    async pull(ctl) {
+      try {
+        const r = await it.next()
+        if (r.done) return ctl.close()
+        ctl.enqueue(enc.encode(`event: ${r.value.type}\ndata: ${JSON.stringify(r.value)}\n\n`))
+      } catch (e) {
+        ctl.enqueue(enc.encode(`event: error\ndata: ${JSON.stringify({ type: "error", code: "server_error", message: e.message })}\n\n`))
+        ctl.close()
+      }
+    },
+    cancel() { return it.return?.() },
+  })
+  return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Magpie-Sign-In": "kept" } })
+}
+
+// ---- Claude's Messages interface ------------------------------------------------------
+
+// Claude must use Messages at the plugin boundary: Chat Completions has
+// no standard field for its signatures, so magpie's Chat translator cannot
+// seal/replay them for Codex. The upstream remains Devin's Connect RPC.
+function anthropicChat(req) {
+  const messages = []
+  if (req.system) messages.push({ role: "system", content: textOf(req.system) })
+  const parts = (content) => (typeof content === "string" ? [{ type: "text", text: content }] : content ?? [])
+  const image = (p) => {
+    if (p.source?.type !== "base64" || !p.source.data) throw new Error("Devin requires inline base64 images")
+    return { type: "image_url", image_url: { url: `data:${p.source.media_type || "image/png"};base64,${p.source.data}` } }
+  }
+  const contentParts = (content) => parts(content).map((p) => {
+    if (p.type === "image") return image(p)
+    if (p.type === "text") return { type: "text", text: p.text ?? "" }
+    throw new Error(`unsupported Devin content block: ${p.type}`)
+  })
+  for (const m of req.messages ?? []) {
+    if (m.role === "system" || m.role === "developer") {
+      messages.push({ role: m.role, content: textOf(m.content) })
+    } else if (m.role === "assistant") {
+      let current = { role: "assistant", content: [], tool_calls: [], devin_thinking: [] }
+      const flush = () => {
+        if (current.content.length || current.tool_calls.length || current.devin_thinking.length) messages.push(current)
+        current = { role: "assistant", content: [], tool_calls: [], devin_thinking: [] }
+      }
+      for (const p of parts(m.content)) {
+        if (p.type === "thinking") {
+          // Keep multiple signed blocks distinct, including signed blocks
+          // with no visible text. Never concatenate their signatures.
+          flush()
+          if (p.signature) current.devin_thinking.push({ text: p.thinking ?? "", signature: p.signature, origin: "anthropic" })
+        } else if (p.type === "text") current.content.push({ type: "text", text: p.text ?? "" })
+        else if (p.type === "tool_use") current.tool_calls.push({ id: p.id, type: "function", function: { name: p.name, arguments: JSON.stringify(p.input ?? {}) } })
+        else throw new Error(`unsupported Devin assistant block: ${p.type}`)
+      }
+      flush()
+    } else if (m.role === "user") {
+      let content = []
+      const flush = () => {
+        if (content.length) messages.push({ role: "user", content })
+        content = []
+      }
+      for (const p of parts(m.content)) {
+        if (p.type === "tool_result") {
+          flush()
+          messages.push({ role: "tool", tool_call_id: p.tool_use_id, content: contentParts(p.content) })
+        } else content.push(...contentParts([p]))
+      }
+      flush()
+    }
+  }
+  return {
+    model: req.model, messages, stream: req.stream,
+    max_tokens: req.max_tokens, temperature: req.temperature, top_p: req.top_p,
+    reasoning_effort: req.output_config?.effort ?? req.reasoning_effort,
+    response_format: req.output_config?.format?.type === "json_schema" ? { type: "json_schema", schema: req.output_config.format.schema } : undefined,
+    tools: (req.tools ?? []).map((t) => {
+      if (!t.name || t.type) throw new Error("Devin supports client function tools only")
+      return { type: "function", function: { name: t.name, description: t.description ?? "", parameters: t.input_schema } }
+    }),
+    ...(req.tool_choice?.type === "none" ? { tool_choice: "none" } : {}),
+  }
+}
+
+const anthropicErrorBody = ({ status, message }) => ({ type: "error", error: {
+  type: status === 401 ? "authentication_error" : status === 429 ? "rate_limit_error" : status === 400 ? "invalid_request_error" : "api_error", message,
+} })
+const anthropicError = (error) => Response.json(anthropicErrorBody(error), { status: error.status, headers: { "X-Magpie-Sign-In": "kept" } })
+const anthropicUsage = (u = {}) => ({
+  input_tokens: Math.max(0, (u.prompt_tokens ?? 0) - (u.prompt_tokens_details?.cached_tokens ?? 0) - (u.prompt_tokens_details?.cache_write_tokens ?? 0)),
+  output_tokens: u.completion_tokens ?? 0,
+  cache_read_input_tokens: u.prompt_tokens_details?.cached_tokens ?? 0,
+  cache_creation_input_tokens: u.prompt_tokens_details?.cache_write_tokens ?? 0,
+})
+
+async function* anthropicEvents(it, model) {
+  yield { type: "message_start", message: { id: "msg_" + randomBytes(12).toString("hex"), type: "message", role: "assistant", model,
+    content: [], stop_reason: null, stop_sequence: null, usage: anthropicUsage() } }
+  let index = -1
+  let kind = ""
+  let thinking = ""
+  let call = -1
+  const close = () => {
+    if (!kind) return null
+    kind = ""
+    return { type: "content_block_stop", index }
+  }
+  const open = (type, content) => {
+    kind = type
+    index++
+    return { type: "content_block_start", index, content_block: { type, ...content } }
+  }
+  for await (const e of it) {
+    if (e.error) {
+      throw Object.assign(new Error(e.error.message), { status: e.error.status })
+    }
+    if (e.reasoning) {
+      if (kind !== "thinking") {
+        const end = close()
+        if (end) yield end
+        thinking = ""
+        yield open("thinking", { thinking: "", signature: "" })
+      }
+      thinking += e.reasoning
+      yield { type: "content_block_delta", index, delta: { type: "thinking_delta", thinking: e.reasoning } }
+    } else if (e.signed) {
+      if (e.signed.origin !== "anthropic") throw new Error("a thought without a verified Anthropic origin cannot be returned as a Claude thinking block")
+      if (kind !== "thinking") {
+        const end = close()
+        if (end) yield end
+        thinking = ""
+        yield open("thinking", { thinking: "", signature: "" })
+      }
+      if (thinking !== e.signed.text) throw new Error("Devin's signed thinking does not match its streamed text")
+      yield { type: "content_block_delta", index, delta: { type: "signature_delta", signature: e.signed.signature } }
+      yield close()
+    } else if (e.text) {
+      if (kind !== "text") {
+        const end = close()
+        if (end) yield end
+        yield open("text", { text: "" })
+      }
+      yield { type: "content_block_delta", index, delta: { type: "text_delta", text: e.text } }
+    } else if (e.tool) {
+      const end = close()
+      if (end) yield end
+      call = e.tool.index
+      yield open("tool_use", { id: e.tool.id, name: e.tool.name, input: {} })
+    } else if (e.args) {
+      if (kind !== "tool_use" || e.args.index !== call) throw new Error("Devin returned arguments outside their tool call")
+      yield { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: e.args.text } }
+    } else if (e.stop) {
+      const end = close()
+      if (end) yield end
+      yield { type: "message_delta", delta: { stop_reason: e.stop === "tool_calls" ? "tool_use" : e.stop === "length" ? "max_tokens" : "end_turn", stop_sequence: null }, usage: anthropicUsage(e.usage) }
+      yield { type: "message_stop" }
+      return
+    }
+  }
+}
+
+async function completeAnthropic(auth, req, signal) {
+  let chat
+  try {
+    if (!claudeModel(req.model)) throw new Error("the Messages interface is available for Claude models only")
+    chat = anthropicChat(req)
+  } catch (e) {
+    return anthropicError({ status: 400, message: e.message })
+  }
+  const rt = await roundtrip(auth, chat, signal)
+  if (!rt.it) return anthropicError(rt)
+  const it = anthropicEvents(rt.it, req.model)
+  if (!req.stream) {
+    let message
+    const argumentsByBlock = new Map()
+    try {
+      for await (const e of it) {
+        if (e.type === "error") return anthropicError({ status: 502, message: e.error.message })
+        if (e.type === "message_start") message = e.message
+        else if (e.type === "content_block_start") message.content[e.index] = e.content_block
+        else if (e.type === "content_block_delta") {
+          const b = message.content[e.index], d = e.delta
+          if (d.type === "text_delta") b.text += d.text
+          else if (d.type === "thinking_delta") b.thinking += d.thinking
+          else if (d.type === "signature_delta") b.signature += d.signature
+          else if (d.type === "input_json_delta") argumentsByBlock.set(e.index, (argumentsByBlock.get(e.index) ?? "") + d.partial_json)
+        } else if (e.type === "message_delta") Object.assign(message, e.delta, { usage: e.usage })
+      }
+      for (const [index, args] of argumentsByBlock) message.content[index].input = JSON.parse(args || "{}")
+    } catch (e) {
+      return anthropicError({ status: e.status ?? 502, message: e.message })
+    }
+    return Response.json(message, { headers: { "X-Magpie-Sign-In": "kept" } })
+  }
+  const stream = new ReadableStream({
+    async pull(ctl) {
+      try {
+        const r = await it.next()
+        if (r.done) return ctl.close()
+        ctl.enqueue(enc.encode(`event: ${r.value.type}\ndata: ${JSON.stringify(r.value)}\n\n`))
+      } catch (e) {
+        ctl.enqueue(enc.encode(`event: error\ndata: ${JSON.stringify(anthropicErrorBody({ status: e.status ?? 502, message: e.message }))}\n\n`))
+        ctl.close()
+      }
+    },
+    cancel() { return it.return?.() },
+  })
+  return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Magpie-Sign-In": "kept" } })
 }
 
 // ---- OpenCode 2 ----------------------------------------------------------------------
@@ -1876,13 +2353,19 @@ function v2Chat(options, modelID) {
     if (m.role === "assistant") {
       let text = ""
       const calls = []
+      const thinking = []
       for (const p of m.content ?? []) {
         if (p.type === "text") text += (text ? "\n\n" : "") + p.text
+        else if (p.type === "reasoning") {
+          const meta = p.providerOptions?.devin ?? p.providerMetadata?.devin
+          if (typeof meta?.signature === "string" && meta.signature && typeof meta.origin === "string" && meta.origin)
+            thinking.push({ text: p.text ?? "", signature: meta.signature, origin: meta.origin })
+        }
         else if (p.type === "tool-call")
           calls.push({ id: p.toolCallId, type: "function", function: { name: p.toolName, arguments: JSON.stringify(p.input ?? {}) } })
       }
-      if (!text && !calls.length) continue
-      messages.push({ role: "assistant", content: text, ...(calls.length ? { tool_calls: calls } : {}) })
+      if (!text && !calls.length && !thinking.length) continue
+      messages.push({ role: "assistant", content: text, devin_thinking: thinking, ...(calls.length ? { tool_calls: calls } : {}) })
       continue
     }
     if (m.role === "tool") {
@@ -2006,7 +2489,9 @@ function devinLanguage(modelID, getAuth) {
       if (!res.ok) throw new Error(body?.error?.message || `Devin: ${res.status}`)
       const msg = body.choices?.[0]?.message ?? {}
       const content = []
-      if (msg.reasoning_content) content.push({ type: "reasoning", text: msg.reasoning_content })
+      if (msg.devin_thinking?.length) {
+        for (const b of msg.devin_thinking) content.push({ type: "reasoning", text: b.text, providerMetadata: { devin: { signature: b.signature, origin: b.origin } } })
+      } else if (msg.reasoning_content) content.push({ type: "reasoning", text: msg.reasoning_content })
       if (msg.content) content.push({ type: "text", text: msg.content })
       for (const c of msg.tool_calls ?? [])
         content.push({ type: "tool-call", toolCallId: c.id, toolName: c.function?.name, input: c.function?.arguments || "{}" })
@@ -2031,6 +2516,7 @@ function devinLanguage(modelID, getAuth) {
         _calls: new Map(),
         _open: -1,
         _reasoning: false,
+        _reasoningIndex: 0,
         _text: false,
         async start(ctl) {
           ctl.enqueue({ type: "stream-start", warnings: [] })
@@ -2040,7 +2526,8 @@ function devinLanguage(modelID, getAuth) {
         _openReasoning(ctl) {
           if (this._reasoning) return
           this._reasoning = true
-          ctl.enqueue({ type: "reasoning-start", id: "r1" })
+          this._reasoningIndex++
+          ctl.enqueue({ type: "reasoning-start", id: `r${this._reasoningIndex}` })
         },
         _openText(ctl) {
           if (this._text) return
@@ -2048,7 +2535,8 @@ function devinLanguage(modelID, getAuth) {
           ctl.enqueue({ type: "text-start", id: "t1" })
         },
         _close(ctl) {
-          if (this._reasoning) ctl.enqueue({ type: "reasoning-end", id: "r1" })
+          if (this._reasoning) ctl.enqueue({ type: "reasoning-end", id: `r${this._reasoningIndex}` })
+          this._reasoning = false
           if (this._text) ctl.enqueue({ type: "text-end", id: "t1" })
         },
         async pull(ctl) {
@@ -2065,7 +2553,12 @@ function devinLanguage(modelID, getAuth) {
             }
             if (e.reasoning) {
               this._openReasoning(ctl)
-              return ctl.enqueue({ type: "reasoning-delta", id: "r1", delta: e.reasoning })
+              return ctl.enqueue({ type: "reasoning-delta", id: `r${this._reasoningIndex}`, delta: e.reasoning })
+            }
+            if (e.signed) {
+              this._openReasoning(ctl)
+              this._reasoning = false
+              return ctl.enqueue({ type: "reasoning-end", id: `r${this._reasoningIndex}`, providerMetadata: { devin: { signature: e.signed.signature, origin: e.signed.origin } } })
             }
             if (e.tool) {
               this._open = e.tool.index
@@ -2426,17 +2919,20 @@ export async function DevinAuthPlugin({ client } = {}) {
             const now = await getAuth()
             if (now?.type !== "api" || !now.key) return errorResponse({ status: 401, message: "Devin isn't signed in" })
             const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
-            if (!/\/chat\/completions$/.test(new URL(url).pathname)) return errorResponse({ status: 404, message: "only chat completions are served" })
+            const path = new URL(url).pathname
+            const messages = /\/messages$/.test(path)
+            const responses = /\/responses$/.test(path)
+            if (!messages && !responses && !/\/chat\/completions$/.test(path)) return errorResponse({ status: 404, message: "only chat completions, responses and Claude messages are served" })
             let chat
             try {
               const b = init.body ?? (input instanceof Request ? await input.clone().text() : undefined)
               chat = JSON.parse(typeof b === "string" ? b : dec.decode(b))
             } catch {
-              return errorResponse({ status: 400, message: "a request that isn't JSON" })
+              return (messages ? anthropicError : errorResponse)({ status: 400, message: "a request that isn't JSON" })
             }
             const { key, server } = await live(now)
             const families = await familiesFor(key, server)
-            return complete({ key, server, families }, chat, init.signal)
+            return (messages ? completeAnthropic : responses ? completeResponses : complete)({ key, server, families }, chat, init.signal)
           },
         }
       },
@@ -2513,4 +3009,4 @@ export async function DevinAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }
+export const _internal = { responsesChat, responsesEvents, completeResponses, sealThinking, openThinking, anthropicChat, anthropicEvents, completeAnthropic, signedThinking, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }

@@ -1,0 +1,13 @@
+node_modules/
+.DS_Store
+__pycache__/
+*.pyc
+*.log
+*.har
+*.har.gz
+*.proxymanlog
+.env
+.env.*
+credentials.toml
+auth.json
+plugin-auth.json
