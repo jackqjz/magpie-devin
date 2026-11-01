@@ -1588,11 +1588,16 @@ function build(chat, uid, key) {
     }
     msgs[at].text = joinNonEmpty(instructions, msgs[at].text)
   }
+  return encodeRequest(msgs, tools, { max: chat.max_completion_tokens || chat.max_tokens, temperature: chat.temperature, top_p: chat.top_p }, uid, key)
+}
 
+// encodeRequest is the GetChatMessage request of msgs, with tools offered
+// and the sampling asked, to the model uid. Chat and Messages share it.
+function encodeRequest(msgs, tools, chat, uid, key) {
   const out = new PB().bytes(1, metadata(key))
   for (const m of msgs) out.bytes(3, encodeMsg(m))
   out.varint(7, 5)
-  const max = chat.max_completion_tokens || chat.max_tokens || 128000 // the server holds it to the model's own
+  const max = chat.max || 128000 // the server holds it to the model's own
   // Devin answers "an internal error occurred" to a temperature or top_p of
   // exactly 0 (on every model: its Claude ones and swe-2), where 1e-6 goes
   // through; a 0 is sent as the smallest step above it, as near greedy
@@ -1619,6 +1624,9 @@ function encodeMsg(m) {
   if (m.text) b.str(3, m.text)
   for (const c of m.calls ?? []) b.bytes(6, new PB().str(1, c.id ?? "").str(2, c.name ?? "").bytes(3, c.args))
   if (m.callID) b.str(7, m.callID)
+  // prompt_cache_options {type: EPHEMERAL}: where the client put
+  // cache_control, as the Devin CLI 3000.11.234 marks its own prompts
+  if (m.cache) b.bytes(8, new PB().varint(1, 1))
   for (const p of m.images ?? []) b.bytes(10, new PB().str(1, p.data).str(2, p.type))
   if (m.thinking) b.str(11, m.thinking.text).str(12, m.thinking.signature).str(18, m.thinking.origin)
   return b.done()
@@ -1776,9 +1784,14 @@ async function* prepend(first, rest) {
 
 // roundtrip sends a chat to GetChatMessage and answers with its event
 // iterator, or an error ({status, message}).
-async function roundtrip({ key, server, families }, chat, signal) {
-  const uid = variantFor(families, chat.model, effortOf(chat.reasoning_effort))
-  const body = frame(build(chat, uid, key))
+// A wire is how a request is read: chat completions' (also used for
+// Responses after responsesChat) or Anthropic Messages'.
+const CHAT_WIRE = { effort: (chat) => effortOf(chat.reasoning_effort), build }
+const MESSAGES_WIRE = { effort: anthropicEffort, build: buildMessages }
+
+async function roundtrip({ key, server, families }, chat, signal, wire = CHAT_WIRE) {
+  const uid = variantFor(families, chat.model, wire.effort(chat))
+  const body = frame(wire.build(chat, uid, key))
   let res
   try {
     res = await fetch(server + CHAT_RPC, {
@@ -2115,65 +2128,189 @@ async function completeResponses(auth, req, signal) {
 // Claude must use Messages at the plugin boundary: Chat Completions has
 // no standard field for its signatures, so magpie's Chat translator cannot
 // seal/replay them for Codex. The upstream remains Devin's Connect RPC.
-function anthropicChat(req) {
-  const messages = []
-  if (req.system) messages.push({ role: "system", content: textOf(req.system) })
-  const parts = (content) => (typeof content === "string" ? [{ type: "text", text: content }] : content ?? [])
-  const image = (p) => {
-    if (p.source?.type !== "base64" || !p.source.data) throw new Error("Devin requires inline base64 images")
-    return { type: "image_url", image_url: { url: `data:${p.source.media_type || "image/png"};base64,${p.source.data}` } }
+
+// Claude Code's billing line, a system block of its own whose cch changes
+// every turn: Devin would read it as the prompt's first words, and no
+// turn's prefix would be the last's (upstream 0.1.28)
+const BILLING_LINE = /^x-anthropic-billing-header:(\s*[A-Za-z_]+=[^;\s]*;)*\s*(\n|$)/
+
+// marked says whether the client asked for the cache to end at a block.
+const marked = (b) => !!(b && typeof b === "object" && b.cache_control && typeof b.cache_control === "object")
+
+// anthropicImage is an image block as Devin takes one: inline bytes only.
+function anthropicImage(b) {
+  if (b.source?.type !== "base64" || !b.source.data) throw new Error("Devin requires inline base64 images")
+  return { data: b.source.data, type: b.source.media_type || "image/png" }
+}
+
+// anthropicEffort is the effort a Messages request asks for: magpie's
+// output_config effort first, else the thinking budget's; none with the
+// thinking turned off.
+function anthropicEffort(req) {
+  const named = effortOf(req.output_config?.effort ?? req.reasoning_effort)
+  if (named) return named
+  const t = req.thinking?.type
+  if (t !== "enabled" && t !== "adaptive") return ""
+  const n = Number(req.thinking?.budget_tokens) || 0
+  return n <= 0 ? "" : n <= 4096 ? "low" : n <= 12000 ? "medium" : n <= 24000 ? "high" : "xhigh"
+}
+
+// buildMessages is the GetChatMessage request for a Messages request, to
+// the model uid, shaped as the Devin CLI sends its own (captured from CLI
+// 3000.11.3 and the desktop's 3000.11.234):
+//   - each system and user text block is a prompt of its own, in order,
+//     never joined: the CLI sends its context as several user prompts;
+//   - a block the client marked with cache_control carries
+//     prompt_cache_options (field 8): Devin's cache ends only at a prompt
+//     that says so, and only at its end (upstream 0.1.28, #566);
+//   - an assistant turn is one message holding its text, its calls and its
+//     signed thought (fields 11/12/18), returned exactly as received. A
+//     turn with several signed thoughts gets one message per thought, as
+//     protobuf's fields are singular, with the calls on the last;
+//   - a failed tool_result says so in its text, "Error: ...", as magpie's
+//     gateway does on Chat (upstream 0.1.29): Devin has no failed flag.
+// Unsupported blocks are refused rather than silently dropped.
+function buildMessages(req, uid, key) {
+  if (!claudeModel(req.model)) throw new Error("the Messages interface is available for Claude models only")
+  const blocksOf = (content) => (typeof content === "string" ? (content ? [{ type: "text", text: content }] : []) : Array.isArray(content) ? content : [])
+  const system = []
+  const systemBlock = (b, from) => {
+    if (b?.type !== "text" || typeof b.text !== "string") throw new Error(`unsupported Devin ${from} block: ${b?.type}`)
+    const text = b.text.replace(BILLING_LINE, "")
+    if (text.trim()) system.push({ role: USER, text, cache: marked(b) })
+    else if (marked(b) && system.length) system[system.length - 1].cache = true
   }
-  const contentParts = (content) => parts(content).map((p) => {
-    if (p.type === "image") return image(p)
-    if (p.type === "text") return { type: "text", text: p.text ?? "" }
-    throw new Error(`unsupported Devin content block: ${p.type}`)
-  })
+  for (const b of blocksOf(req.system)) systemBlock(b, "system")
+
+  const msgs = []
+  let pending = [] // calls the last reply made, not yet answered
+  const answer = () => {
+    for (const c of pending) msgs.push({ role: TOOL, callID: c.id, text: NO_RESULT })
+    pending = []
+  }
+  // Messages alternate roles; two of one role in a row are one turn
+  // (yetone/magpie#1275: an agent may split a turn's parallel calls)
+  const turns = []
   for (const m of req.messages ?? []) {
-    if (m.role === "system" || m.role === "developer") {
-      messages.push({ role: m.role, content: textOf(m.content) })
-    } else if (m.role === "assistant") {
-      let current = { role: "assistant", content: [], tool_calls: [], devin_thinking: [] }
-      const flush = () => {
-        if (current.content.length || current.tool_calls.length || current.devin_thinking.length) messages.push(current)
-        current = { role: "assistant", content: [], tool_calls: [], devin_thinking: [] }
+    if (m?.role === "system" || m?.role === "developer") {
+      for (const b of blocksOf(m.content)) systemBlock(b, m.role)
+      continue
+    }
+    if (m?.role !== "user" && m?.role !== "assistant") continue
+    const last = turns.at(-1)
+    if (last?.role === m.role) last.blocks.push(...blocksOf(m.content))
+    else turns.push({ role: m.role, blocks: [...blocksOf(m.content)] })
+  }
+
+  for (const t of turns) {
+    if (t.role === "assistant") {
+      const groups = [] // one per signed thought, and the text after it
+      let group = null
+      const open = () => (group ??= (groups.push({ texts: [], thinking: undefined, cache: false }), groups.at(-1)))
+      const calls = []
+      for (const b of t.blocks) {
+        if (b?.type === "thinking") {
+          // Keep multiple signed blocks distinct, including ones with no
+          // visible text; unsigned reasoning is never given a signature
+          // and is left out without splitting the turn
+          if (b.signature) {
+            group = null
+            open().thinking = { text: b.thinking ?? "", signature: b.signature, origin: "anthropic" }
+          }
+          if (marked(b)) open().cache = true
+        } else if (b?.type === "text") {
+          if (b.text) open().texts.push(b.text)
+          if (marked(b)) open().cache = true
+        } else if (b?.type === "tool_use") {
+          if (!b.name) throw new Error("a tool_use without a name")
+          calls.push({ id: inID(b.id), name: b.name, args: argsOf(b.input ?? {}) })
+          if (marked(b)) open().cache = true
+        } else throw new Error(`unsupported Devin assistant block: ${b?.type}`)
       }
-      for (const p of parts(m.content)) {
-        if (p.type === "thinking") {
-          // Keep multiple signed blocks distinct, including signed blocks
-          // with no visible text. Never concatenate their signatures.
-          flush()
-          if (p.signature) current.devin_thinking.push({ text: p.thinking ?? "", signature: p.signature, origin: "anthropic" })
-        } else if (p.type === "text") current.content.push({ type: "text", text: p.text ?? "" })
-        else if (p.type === "tool_use") current.tool_calls.push({ id: p.id, type: "function", function: { name: p.name, arguments: JSON.stringify(p.input ?? {}) } })
-        else throw new Error(`unsupported Devin assistant block: ${p.type}`)
+      if (calls.length && !groups.length) open()
+      const own = groups
+        .map((g) => ({ role: ASSISTANT, text: g.texts.join("\n\n"), calls: [], thinking: g.thinking, cache: g.cache }))
+        .filter((m, i) => m.text || m.thinking || (calls.length && i === groups.length - 1))
+      if (!own.length) continue
+      if (calls.length) {
+        // the calls go on the last message; a mark among them goes with them
+        const last = own.at(-1)
+        last.calls = calls
+        last.cache ||= groups.at(-1).cache
       }
-      flush()
-    } else if (m.role === "user") {
-      let content = []
-      const flush = () => {
-        if (content.length) messages.push({ role: "user", content })
-        content = []
+      answer()
+      msgs.push(...own)
+      // a copy: answering a call takes it off pending, never off the reply
+      pending = [...calls]
+      continue
+    }
+    let held = [] // images ahead of the user's next words in this turn
+    let words = null // the turn's last prompt of the user's own
+    for (const b of t.blocks) {
+      if (b?.type === "tool_result") {
+        // only a call just made is answered, and only once
+        const i = pending.findIndex((c) => c.id === inID(b.tool_use_id))
+        if (i < 0) continue
+        const inner = blocksOf(b.content)
+        const texts = [], images = []
+        for (const x of inner) {
+          if (x?.type === "text") { if (x.text) texts.push(x.text) }
+          else if (x?.type === "image") images.push(anthropicImage(x))
+          else throw new Error(`unsupported Devin content block: ${x?.type}`)
+        }
+        const said = texts.join("\n\n") || "(no output)"
+        msgs.push({ role: TOOL, callID: pending[i].id, text: b.is_error ? "Error: " + said : said, images, cache: marked(b) || marked(inner.at(-1)) })
+        pending.splice(i, 1)
+        words = null
+        continue
       }
-      for (const p of parts(m.content)) {
-        if (p.type === "tool_result") {
-          flush()
-          messages.push({ role: "tool", tool_call_id: p.tool_use_id, content: contentParts(p.content) })
-        } else content.push(...contentParts([p]))
+      if (b?.type === "text") {
+        if (!b.text) {
+          if (marked(b) && words) words.cache = true
+          continue
+        }
+        answer()
+        words = { role: USER, text: b.text, images: held, cache: marked(b) }
+        held = []
+        msgs.push(words)
+        continue
       }
-      flush()
+      if (b?.type !== "image") throw new Error(`unsupported Devin content block: ${b?.type}`)
+      const im = anthropicImage(b)
+      // an image goes with the words it follows, or the next ones
+      if (words) {
+        words.images.push(im)
+        words.cache ||= marked(b)
+      } else held.push(im)
+    }
+    if (held.length) {
+      answer()
+      msgs.push({ role: USER, text: "", images: held })
     }
   }
-  return {
-    model: req.model, messages, stream: req.stream,
-    max_tokens: req.max_tokens, temperature: req.temperature, top_p: req.top_p,
-    reasoning_effort: req.output_config?.effort ?? req.reasoning_effort,
-    response_format: req.output_config?.format?.type === "json_schema" ? { type: "json_schema", schema: req.output_config.format.schema } : undefined,
-    tools: (req.tools ?? []).map((t) => {
-      if (!t.name || t.type) throw new Error("Devin supports client function tools only")
-      return { type: "function", function: { name: t.name, description: t.description ?? "", parameters: t.input_schema } }
-    }),
-    ...(req.tool_choice?.type === "none" ? { tool_choice: "none" } : {}),
+  answer()
+  const last = msgs.at(-1)
+  if (!last || (last.role === ASSISTANT && !last.calls.length)) msgs.push({ role: USER, text: "Please proceed with the task." })
+
+  // the instructions go ahead of the first user prompt as prompts of their
+  // own (Devin turns away some agents' instructions in its system field):
+  // the tools' descriptions, then each system block, Anthropic's order, so
+  // a mark on the tools or the system covers what precedes it
+  const f = req.output_config?.format
+  const format = f?.type === "json_schema" ? formatText({ type: "json_schema", schema: f.schema }) : ""
+  if (format) system.push({ role: USER, text: format })
+  let tools = (req.tools ?? []).map((t) => {
+    if (!t?.name || (t.type && t.type !== "custom")) throw new Error("Devin supports client function tools only")
+    return { name: t.name, description: t.description ?? "", schema: objectRoot(t.input_schema), cache: marked(t) }
+  })
+  if (req.tool_choice?.type === "none") tools = []
+  const described = toolDescriptions(tools)
+  if (described) system.unshift({ role: USER, text: described, cache: tools.some((t) => t.cache) })
+  if (system.length) {
+    const at = msgs.findIndex((m) => m.role === USER)
+    msgs.splice(at < 0 ? 0 : at, 0, ...system)
   }
+  return encodeRequest(msgs, tools, { max: req.max_tokens, temperature: req.temperature, top_p: req.top_p }, uid, key)
 }
 
 const anthropicErrorBody = ({ status, message }) => ({ type: "error", error: {
@@ -2254,14 +2391,14 @@ async function* anthropicEvents(it, model) {
 }
 
 async function completeAnthropic(auth, req, signal) {
-  let chat
+  // the request is built before anything is sent, so a block Devin can't
+  // carry is refused with a 400 and no upstream call
   try {
-    if (!claudeModel(req.model)) throw new Error("the Messages interface is available for Claude models only")
-    chat = anthropicChat(req)
+    buildMessages(req, "", "")
   } catch (e) {
     return anthropicError({ status: 400, message: e.message })
   }
-  const rt = await roundtrip(auth, chat, signal)
+  const rt = await roundtrip(auth, req, signal, MESSAGES_WIRE)
   if (!rt.it) return anthropicError(rt)
   const it = anthropicEvents(rt.it, req.model)
   if (!req.stream) {
@@ -3009,4 +3146,4 @@ export async function DevinAuthPlugin({ client } = {}) {
 }
 
 // for tests
-export const _internal = { responsesChat, responsesEvents, completeResponses, sealThinking, openThinking, anthropicChat, anthropicEvents, completeAnthropic, signedThinking, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }
+export const _internal = { responsesChat, responsesEvents, completeResponses, sealThinking, openThinking, buildMessages, anthropicEffort, anthropicEvents, completeAnthropic, signedThinking, parseFree, parsePrices, geminiSchema, freeIDs, outID, inID, objectRoot, seesImages, imagesFor, forgetSaid: () => said.clear(), parseModelConfigs, parseConfigFamilies, SNAPSHOT_IMAGES, withImages, forgetImages: () => (seen = null), effortOf, runtimeModel, configModel, live, build, failure, complete, parseFamilies, listed, variantFor, familiesOf, SNAPSHOT, parseStatus, readsHome, tierName, whoOfStatus, whoByKey, success, familiesFor, readCredentials, credentials, fields, frame, PB, events, frames, v2Chat, v2ToolParts, v2FileData, v2Effort, v2ResponseFormat, v2Usage, v2Auth, v2Credential, v2Models, devinLanguage, v2Setup, connKey }

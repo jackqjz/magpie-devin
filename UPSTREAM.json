@@ -6,5 +6,31 @@
   "package": "@magpie-community/opencode-devin-auth",
   "version": "0.1.27",
   "index_sha256": "fb635ec756ceeb4365a920c9e334554aac35bffb8521322980277cddd789bf01",
-  "provider_id": "devin"
+  "provider_id": "devin",
+  "reviewed_through": {
+    "version": "0.1.30",
+    "commit": "b797476f6b31d64cb26536af01035ba4efb6b9ea",
+    "reviewed": "2026-11-01"
+  },
+  "ported": [
+    {
+      "version": "0.1.28",
+      "commit": "1d340e873e96e9370b46cd7912f3b4deac3aead4",
+      "taken": "Claude Messages keeps client block boundaries; cache_control becomes prompt_cache_options (field 8); Claude Code billing line removed",
+      "not_taken": "dropping signed thinking from history"
+    },
+    {
+      "version": "0.1.29",
+      "commit": "8b01396ffebd97c93b0c89ce65ef2141091e4217",
+      "taken": "failed tool_result text prefixed with Error:"
+    }
+  ],
+  "not_ported": [
+    {
+      "version": "0.1.30",
+      "commit": "b797476f6b31d64cb26536af01035ba4efb6b9ea",
+      "feature": "optional cache keepalive pings",
+      "reason": "default off upstream; billed per ping; no keepalive ping observed in local CLI/desktop captures"
+    }
+  ]
 }

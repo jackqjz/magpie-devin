@@ -104,9 +104,8 @@ for (const stream of [false, true]) {
     }
     assert.deepEqual(content.find((b) => b.type === "thinking"), { type: "thinking", thinking: thought.text, signature: thought.signature })
     const call = content.find((b) => b.type === "tool_use")
-    const follow = d.anthropicChat(request({ messages: [...request().messages,
-      { role: "assistant", content }, { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "read output" }] }] }))
-    const built = d.build(follow, "claude-opus-5-5-high", "test")
+    const built = d.buildMessages(request({ messages: [...request().messages,
+      { role: "assistant", content }, { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "read output" }] }] }), "claude-opus-5-5-high", "test")
     assert.deepEqual(signed(built), [thought])
     assert.equal(val(messages(built).find((f) => val(f, 7)), 7), "Bash:0#abc")
     assert.equal(sent[0].init.headers.Authorization, "Basic test-credential-test-credential")
@@ -158,17 +157,17 @@ test("split parallel tool calls retain each signed block and actual tool results
   assert.deepEqual(messages(built).filter((f) => val(f, 7)).map((f) => val(f, 3)), ["result a", "result b"])
 })
 test("multiple Anthropic thoughts stay distinct in protobuf history", () => {
-  const chat = d.anthropicChat(request({ messages: [{ role: "assistant", content: [
+  const built = d.buildMessages(request({ messages: [{ role: "assistant", content: [
     { type: "thinking", thinking: "one", signature: "sig1" }, { type: "thinking", thinking: "two", signature: "sig2" },
-    { type: "text", text: "done" }] }] }))
-  assert.deepEqual(signed(d.build(chat, model, "test")), [
+    { type: "text", text: "done" }] }] }), model, "test")
+  assert.deepEqual(signed(built), [
     { text: "one", signature: "sig1", origin: "anthropic" }, { text: "two", signature: "sig2", origin: "anthropic" }])
 })
 test("tool result images stay on the tool result", () => {
-  const chat = d.anthropicChat(request({ messages: [{ role: "user", content: "read" },
+  const built = d.buildMessages(request({ messages: [{ role: "user", content: "read" },
     { role: "assistant", content: [{ type: "tool_use", id: "c", name: "read", input: {} }] },
-    { role: "user", content: [{ type: "tool_result", tool_use_id: "c", content: [{ type: "text", text: "image" }, { type: "image", source: { type: "base64", media_type: "image/png", data: "aW1hZ2U=" } }] }] }] }))
-  const result = messages(d.build(chat, model, "test")).find((f) => val(f, 7) === "c")
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "c", content: [{ type: "text", text: "image" }, { type: "image", source: { type: "base64", media_type: "image/png", data: "aW1hZ2U=" } }] }] }] }), model, "test")
+  const result = messages(built).find((f) => val(f, 7) === "c")
   assert.equal(result.filter((f) => f.num === 10).length, 1)
   assert.equal(val(result, 3), "image")
 })

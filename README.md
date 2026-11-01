@@ -1,12 +1,21 @@
 # jackqjz/magpie-devin
 
-本人维护的 Magpie Devin 插件，基于上游 0.1.27，保留已验证的本地修复。包名为 `@jackqjz/magpie-devin`；供应商 ID 保持 `devin`，账号仍由 Magpie 的原供应商存储管理。
+本人维护的 Magpie Devin 插件，基于上游 0.1.27，保留已验证的本地修复，并选择性移植了上游 0.1.28–0.1.29 的改动（已审查到 0.1.30）。包名为 `@jackqjz/magpie-devin`；供应商 ID 保持 `devin`，账号仍由 Magpie 的原供应商存储管理。
 
 ## 修复
 
 保留原始 thinking、signature 和 origin，覆盖签名晚于可见文字到达的情况。Claude 在 Magpie 边界使用 Anthropic Messages，SWE-2 使用 Responses；上游继续使用 Connect/Protobuf。SWE 的本地状态封装与账号绑定，支持进程重启。鉴权使用本人原生 CLI 抓包验证的形式。
 
-运行文件 SHA-256：`2dda26aed9b95445e77fe12b94d95cc71867f7e169d61b17e3fb82fc9cb67e43`。维护本仓库时没有改变已验收的运行代码。
+Claude 的 Messages 请求按 Devin CLI 的形态发送（对照本机 CLI 3000.11.3 和 Devin 桌面内置 CLI 3000.11.234 的抓包）：
+
+- system 与 user 的每个文本块各自成为一条 prompt，不再合并成一条；
+- 客户端标了 `cache_control` 的块写入 `prompt_cache_options {type: 1}`（字段 8），与新版 CLI 的编码一致；
+- 失败的 `tool_result` 在文字前加 `Error:`（上游 0.1.29），Devin 没有失败标记字段；
+- 与上游 0.1.28 不同，签名 thinking 继续原样回传，不丢弃。
+
+上游 0.1.30 的缓存保活没有移植：上游默认关闭、每次保活计费，本机 CLI 抓包中也没有观察到保活请求。
+
+运行文件 SHA-256：`b70f42cf27549e7e08464a2ea5902f86ddf754ac4229395e0a124eeccd074de1`。
 
 ## 安装
 
