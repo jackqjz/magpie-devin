@@ -15,7 +15,13 @@ Claude 的 Messages 请求按 Devin CLI 的形态发送（对照本机 CLI 3000.
 
 上游 0.1.30 的缓存保活没有移植：上游默认关闭、每次保活计费，本机 CLI 抓包中也没有观察到保活请求。
 
-运行文件 SHA-256：`73cabe7831d8d43b0f493fe4a9e1fcbb91d73bfd74e8008ef295493e40f4cec9`。
+运行文件 SHA-256：`38b34ef37e4cf2a41cae2412096665414615ad9902a262a127adc2bedef051fe`。
+
+## 0.1.37-jackqjz.2 更新
+
+修复 Cindy / Claude Code 切换模型时的 `Couldn't confirm model`：Claude Code 用 `max_tokens: 1` 验证模型，Devin 有时消耗该 token 后以长度上限结束但不返回可见文本。旧版把这种正常响应当作空回复错误，触发网关重试，最终验证超时。
+
+仅在 Messages 请求明确限制为 1 token、Devin 明确返回长度上限且记录恰好 1 个输出 token 时，保留真实的 `max_tokens` 结束状态及 usage。未增加输出预算、未伪造回复；其他空回复和上游错误仍照常拒绝。
 
 ## 0.1.37-jackqjz.1 更新
 

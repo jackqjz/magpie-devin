@@ -1,6 +1,6 @@
 {
   "name": "@jackqjz/magpie-devin",
-  "version": "0.1.37-jackqjz.1",
+  "version": "0.1.37-jackqjz.2",
   "description": "Personally maintained devin plugin for Magpie with verified protocol fixes",
   "type": "module",
   "main": "./index.mjs",

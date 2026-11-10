@@ -1688,7 +1688,7 @@ function failure(status, text) {
 // events turns the reply's frames into chat completion pieces: text,
 // reasoning, each tool call opened with its id and name, its arguments in
 // pieces after, then the finish with the usage.
-async function* events(it) {
+async function* events(it, { allowEmptyLength = false } = {}) {
   let tools = -1
   let stop = 0
   let said = 0
@@ -1770,7 +1770,12 @@ async function* events(it) {
   }
   const prior = endThought()
   if (prior) yield prior
-  if (!said && tools < 0 && !signed) {
+  // Claude Code's model-access probe requests exactly one output token.
+  // Devin can consume that token without visible text, then explicitly
+  // finish at the length limit. That is a valid probe result, not a 502.
+  // Keep rejecting unexplained metadata-only replies and ordinary empties.
+  const exhaustedProbe = allowEmptyLength && stop === 3 && usage.output === 1
+  if (!said && tools < 0 && !signed && !exhaustedProbe) {
     yield { error: { status: 502, message: "an empty reply (Devin returned no text, reasoning or tool call)" } }
     return
   }
@@ -1839,7 +1844,7 @@ async function roundtrip({ key, server, families }, chat, signal, wire = CHAT_WI
     return e.status < 300 ? { status: 502, message: "an empty reply" } : e
   }
   // 先等到实际内容或错误，才能让网关在空回复时切换渠道。
-  const source = events(prepend(first.value, fr))
+  const source = events(prepend(first.value, fr), { allowEmptyLength: wire === MESSAGES_WIRE && chat.max_tokens === 1 })
   const head = await source.next()
   if (head.done) return { status: 502, message: "an empty reply" }
   if (head.value.error) {

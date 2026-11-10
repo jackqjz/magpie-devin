@@ -37,6 +37,33 @@ async function sse(res) {
   return (await res.text()).split("\n").filter((s) => s.startsWith("data: ") && s !== "data: [DONE]").map((s) => JSON.parse(s.slice(6)))
 }
 
+for (const stream of [false, true]) test(`one-token Messages validation accepts explicit token exhaustion, stream=${stream}`, async (t) => {
+  const sent = mock(t, [new PB().varint(5, 3).bytes(7, new PB().varint(2, 4).varint(3, 1))])
+  const res = await d.completeAnthropic(auth, request({ stream, max_tokens: 1, tools: [], messages: [{ role: "user", content: [{ type: "text", text: "Hi", cache_control: { type: "ephemeral" } }] }] }))
+  assert.equal(res.status, 200)
+  if (stream) {
+    const events = await sse(res)
+    assert.equal(events.find((e) => e.type === "message_delta").delta.stop_reason, "max_tokens")
+    assert.equal(events.at(-1).type, "message_stop")
+  } else {
+    const body = await res.json()
+    assert.deepEqual(body.content, [])
+    assert.equal(body.stop_reason, "max_tokens")
+    assert.equal(body.usage.output_tokens, 1)
+  }
+  assert.equal(sent.length, 1)
+})
+for (const [max_tokens, stop, used] of [[32, 3, 1], [1, 4, 1], [1, 3, 0], [1, 0, 1]]) test(`unexplained empty reply still fails: budget=${max_tokens}, stop=${stop}, output=${used}`, async (t) => {
+  mock(t, [new PB().varint(5, stop).bytes(7, new PB().varint(3, used))])
+  const res = await d.completeAnthropic(auth, request({ max_tokens }))
+  assert.equal(res.status, 502)
+})
+test("one-token probe never hides an upstream stream error", async (t) => {
+  mock(t, [new PB().varint(5, 3).bytes(7, new PB().varint(3, 1))], { error: { code: "resource_exhausted", message: "quota reached" } })
+  const res = await d.completeAnthropic(auth, request({ max_tokens: 1 }))
+  assert.equal(res.status, 429)
+})
+
 for (const stream of [false, true]) test(`unsigned SWE Flash native reasoning survives Responses tool loop, stream=${stream}`, async (t) => {
   mock(t, [new PB().str(9, "native full thought"), new PB().bytes(6, new PB().str(1, "c").str(2, "echo").str(3, "{}")), new PB().varint(5, 10)])
   const req = { model: "swe-2-flash", stream, reasoning: { effort: "medium" }, input: [{ role: "user", content: "go" }], tools: [{ type: "function", name: "echo", parameters: { type: "object" } }] }

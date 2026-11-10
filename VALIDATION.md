@@ -32,3 +32,13 @@ Devin 的外部 Anthropic redacted_thinking 历史尚无已验证映射，插件
 - 出站 Protobuf 模型字段确认分别为 `swe-2-high`、`swe-2-flash-medium`、`claude-opus-5-5-high`，没有调用 SWE 的其他档位。
 - SWE-2 第二轮回传签名思考；Flash 第二轮回传原生完整思考而不添加签名。Claude 本次短任务没有返回 thinking，因此 Claude 签名回归由离线测试及先前验收记录覆盖，本次真实测试验证工具闭环和中途通知。
 - 验证只公开模型 ID 和汇总；不发布登录信息、真实推理文本、签名或请求抓包。
+
+## 2026-11-10：0.1.37-jackqjz.2
+
+运行文件 SHA-256：`38b34ef37e4cf2a41cae2412096665414615ad9902a262a127adc2bedef051fe`。
+
+- 本机 Cindy 内置 Claude Code 2.1.321 的模型验证路径使用 `max_tokens: 1`、`Hi` 和 ephemeral 缓存标记；切换模型验证的截止时间约 15 秒。
+- 真实 Opus 5.5 / Fable 5.2 Fast 在修复前的 1-token 请求均复现 502；上游实际返回 HTTP 200、Protobuf stop=3、output_tokens=1，没有可见内容。32-token 对照均正常。
+- 修复后，相同 1-token 请求两款均返回 HTTP 200、stop_reason=max_tokens、output_tokens=1，耗时约 1–2 秒；32-token 对照继续正常。
+- 离线测试 Bun 168 项、Node 43 项通过；新增流式/非流式验证、普通空回复拒绝、无长度标记拒绝、无输出计量拒绝以及不吞掉上游错误等检查。
+- 抓取范围为合成验证请求的响应字段、停止原因与计量；无需 Proxyman 或全局 HTTPS 解密，不公开账号、鉴权头或响应文本。
