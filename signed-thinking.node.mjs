@@ -37,6 +37,26 @@ async function sse(res) {
   return (await res.text()).split("\n").filter((s) => s.startsWith("data: ") && s !== "data: [DONE]").map((s) => JSON.parse(s.slice(6)))
 }
 
+for (const stream of [false, true]) test(`unsigned SWE Flash native reasoning survives Responses tool loop, stream=${stream}`, async (t) => {
+  mock(t, [new PB().str(9, "native full thought"), new PB().bytes(6, new PB().str(1, "c").str(2, "echo").str(3, "{}")), new PB().varint(5, 10)])
+  const req = { model: "swe-2-flash", stream, reasoning: { effort: "medium" }, input: [{ role: "user", content: "go" }], tools: [{ type: "function", name: "echo", parameters: { type: "object" } }] }
+  const res = await d.completeResponses(auth, req)
+  assert.equal(res.status, 200)
+  const output = stream ? (await sse(res)).find((e) => e.type === "response.completed").response.output : (await res.json()).output
+  const state = output.find((e) => e.encrypted_content)?.encrypted_content
+  assert.ok(state?.startsWith("dvru1_"))
+  assert.deepEqual(d.openThinking(state, auth.key), { text: "native full thought" })
+  assert.throws(() => d.openThinking(state, "different-account"))
+  assert.throws(() => d.openThinking(state.replace("dvru1_", "dvrs1_"), auth.key))
+  const input = [...req.input, ...output, { type: "function_call_output", call_id: "c", output: "ok" }]
+  const built = messages(d.build(d.responsesChat({ ...req, input }, auth.key), "swe-2-flash-medium", "test"))
+  assert.deepEqual(built.filter((f) => val(f, 11)).map((f) => [val(f, 11), val(f, 12), val(f, 18)]), [["native full thought", "", ""]])
+})
+test("foreign Responses summaries are not treated as full unsigned thoughts", () => {
+  const chat = d.responsesChat({ model: "swe-2-flash", input: [{ type: "reasoning", summary: [{ type: "summary_text", text: "foreign summary" }] }, { role: "assistant", content: "reply" }] }, auth.key)
+  assert.ok(messages(d.build(chat, "swe-2-flash-medium", "test")).every((f) => !val(f, 11)))
+})
+
 test("signed thought keeps text, signature and origin together", async () => {
   const out = await collect(d.events(input(rows())))
   assert.deepEqual(out.filter((e) => e.signed).map((e) => e.signed), [thought])

@@ -8,9 +8,9 @@
   "index_sha256": "fb635ec756ceeb4365a920c9e334554aac35bffb8521322980277cddd789bf01",
   "provider_id": "devin",
   "reviewed_through": {
-    "version": "0.1.30",
-    "commit": "b797476f6b31d64cb26536af01035ba4efb6b9ea",
-    "reviewed": "2026-11-01"
+    "version": "0.1.37",
+    "commit": "39d4456ff8a2a53abd85aac9418732a9b379a792",
+    "reviewed": "2026-11-10"
   },
   "ported": [
     {
@@ -23,6 +23,21 @@
       "version": "0.1.29",
       "commit": "8b01396ffebd97c93b0c89ce65ef2141091e4217",
       "taken": "failed tool_result text prefixed with Error:"
+    },
+    {
+      "version": "0.1.32",
+      "commit": "17525a70fdb6d97cc87f942b039592a458f8b3a1",
+      "taken": "Messages inline system/developer notices preserve position and cache mark, waiting for pending tool results"
+    },
+    {
+      "version": "0.1.36",
+      "commit": "1a342edfae311e87c7e9f4af5a261ac7a60eb610",
+      "taken": "Unsigned full reasoning replay for non-Claude Chat/OpenCode 2; preserves original signed blocks. Fork additionally seals native unsigned SWE Responses state without inventing vendor signatures."
+    },
+    {
+      "version": "0.1.37",
+      "commit": "39d4456ff8a2a53abd85aac9418732a9b379a792",
+      "taken": "2026-11-05 model snapshot, including SWE-2 Flash, plus conservative Flash image fallback matching runtime upstream source; live account capabilities remain authoritative"
     }
   ],
   "not_ported": [
@@ -31,6 +46,17 @@
       "commit": "b797476f6b31d64cb26536af01035ba4efb6b9ea",
       "feature": "optional cache keepalive pings",
       "reason": "default off upstream; billed per ping; no keepalive ping observed in local CLI/desktop captures"
+    },
+    {
+      "version": "0.1.31/0.1.33/0.1.34",
+      "feature": "cache keepalive usage reporting, de-duplication and scheduling",
+      "reason": "depends on optional billed keepalive, not enabled in this fork"
+    },
+    {
+      "version": "0.1.35",
+      "commit": "a064cf15e17e10573629b36db79fb06d49318133",
+      "feature": "upstream signed thinking and stream implementation",
+      "reason": "retain existing signed state, late signature handling and iterator-based Messages/Responses streams; regression tests retained"
     }
   ]
 }

@@ -42,7 +42,7 @@ const RETRY = 60 * 1000
 
 // ---- models ---------------------------------------------------------------------
 
-// Devin's list as `devin models list --format json` gave it (2026-10-14),
+// Devin's list as `devin models list --format json` gave it (2026-11-05),
 // less Adaptive and Fusion, which route between models inside Devin's own
 // agent and aren't served by the API: family id, label, aliases, and each
 // variant's id, label, context and output. Inkling and Claude Sonnet 4.5,
@@ -51,7 +51,7 @@ const RETRY = 60 * 1000
 // replaces it.
 const SNAPSHOT = [
   ["swe-2","SWE-2",["swe"],[["swe-2-high","SWE-2 High",262000,128000],["swe-2-medium","SWE-2 Medium",262000,128000],["swe-2-max","SWE-2 Max",262000,128000]]],
-  ["swe-1.7-lightning","SWE-1.7 Lightning",[],[["swe-1-7-lightning","SWE-1.7 Lightning Max",202752,96000],["swe-1-7-lightning-medium","SWE-1.7 Lightning Medium",202752,96000]]],
+  ["swe-2-flash","SWE-2 Flash",[],[["swe-2-flash-medium","SWE-2 Flash Medium",262144,131072],["swe-2-flash-high","SWE-2 Flash High",262144,131072],["swe-2-flash-max","SWE-2 Flash Max",262144,131072]]],
   ["claude-fable-5-1","Claude Fable 5.1",["fable"],[["claude-fable-5-1-medium","Claude Fable 5.1 Medium",1000000,128000],["claude-fable-5-1-low","Claude Fable 5.1 Low",1000000,128000],["claude-fable-5-1-high","Claude Fable 5.1 High",1000000,128000],["claude-fable-5-1-xhigh","Claude Fable 5.1 XHigh",1000000,128000],["claude-fable-5-1-max","Claude Fable 5.1 Max",1000000,128000]]],
   ["claude-opus-5-5","Claude Opus 5.5",[],[["claude-opus-5-5-medium","Claude Opus 5.5 Medium",1000000,128000],["claude-opus-5-5-low","Claude Opus 5.5 Low",1000000,128000],["claude-opus-5-5-high","Claude Opus 5.5 High",1000000,128000],["claude-opus-5-5-xhigh","Claude Opus 5.5 XHigh",1000000,128000],["claude-opus-5-5-max","Claude Opus 5.5 Max",1000000,128000],["claude-opus-5-5-low-fast","Claude Opus 5.5 Low Fast",1000000,128000],["claude-opus-5-5-medium-fast","Claude Opus 5.5 Medium Fast",1000000,128000],["claude-opus-5-5-high-fast","Claude Opus 5.5 High Fast",1000000,128000],["claude-opus-5-5-xhigh-fast","Claude Opus 5.5 XHigh Fast",1000000,128000],["claude-opus-5-5-max-fast","Claude Opus 5.5 Max Fast",1000000,128000]]],
   ["gpt-6-astra","GPT-6 Astra",[],[["gpt-6-astra-medium","GPT-6 Astra Medium Thinking",1000000,128000],["gpt-6-astra-low","GPT-6 Astra Low Thinking",1000000,128000],["gpt-6-astra-high","GPT-6 Astra High Thinking",1000000,128000],["gpt-6-astra-xhigh","GPT-6 Astra XHigh Thinking",1000000,128000],["gpt-6-astra-max","GPT-6 Astra Max Thinking",1000000,128000],["gpt-6-astra-low-priority","GPT-6 Astra Low Thinking Fast",1000000,128000],["gpt-6-astra-medium-priority","GPT-6 Astra Medium Thinking Fast",1000000,128000],["gpt-6-astra-high-priority","GPT-6 Astra High Thinking Fast",1000000,128000],["gpt-6-astra-xhigh-priority","GPT-6 Astra XHigh Thinking Fast",1000000,128000],["gpt-6-astra-max-priority","GPT-6 Astra Max Thinking Fast",1000000,128000]]],
@@ -76,19 +76,28 @@ const SNAPSHOT = [
   ["gpt-5.6-terra","GPT-5.6 Terra",[],[["gpt-5-6-terra-none","GPT-5.6 Terra No Thinking",1000000,128000],["gpt-5-6-terra-low","GPT-5.6 Terra Low Thinking",1000000,128000],["gpt-5-6-terra-medium","GPT-5.6 Terra Medium Thinking",1000000,128000],["gpt-5-6-terra-high","GPT-5.6 Terra High Thinking",1000000,128000],["gpt-5-6-terra-xhigh","GPT-5.6 Terra XHigh Thinking",1000000,128000],["gpt-5-6-terra-max","GPT-5.6 Terra Max Thinking",1000000,128000],["gpt-5-6-terra-none-priority","GPT-5.6 Terra No Thinking Fast",1000000,128000],["gpt-5-6-terra-low-priority","GPT-5.6 Terra Low Thinking Fast",1000000,128000],["gpt-5-6-terra-medium-priority","GPT-5.6 Terra Medium Thinking Fast",1000000,128000],["gpt-5-6-terra-high-priority","GPT-5.6 Terra High Thinking Fast",1000000,128000],["gpt-5-6-terra-xhigh-priority","GPT-5.6 Terra XHigh Thinking Fast",1000000,128000],["gpt-5-6-terra-max-priority","GPT-5.6 Terra Max Thinking Fast",1000000,128000]]],
   ["gpt-5.6-luna","GPT-5.6 Luna",[],[["gpt-5-6-luna-none","GPT-5.6 Luna No Thinking",1000000,128000],["gpt-5-6-luna-low","GPT-5.6 Luna Low Thinking",1000000,128000],["gpt-5-6-luna-medium","GPT-5.6 Luna Medium Thinking",1000000,128000],["gpt-5-6-luna-high","GPT-5.6 Luna High Thinking",1000000,128000],["gpt-5-6-luna-xhigh","GPT-5.6 Luna XHigh Thinking",1000000,128000],["gpt-5-6-luna-max","GPT-5.6 Luna Max Thinking",1000000,128000],["gpt-5-6-luna-none-priority","GPT-5.6 Luna No Thinking Fast",1000000,128000],["gpt-5-6-luna-low-priority","GPT-5.6 Luna Low Thinking Fast",1000000,128000],["gpt-5-6-luna-medium-priority","GPT-5.6 Luna Medium Thinking Fast",1000000,128000],["gpt-5-6-luna-high-priority","GPT-5.6 Luna High Thinking Fast",1000000,128000],["gpt-5-6-luna-xhigh-priority","GPT-5.6 Luna XHigh Thinking Fast",1000000,128000],["gpt-5-6-luna-max-priority","GPT-5.6 Luna Max Thinking Fast",1000000,128000]]],
   ["gpt-6-1-sol","GPT-6.1 Sol",[],[["gpt-6-1-sol-low","GPT-6.1 Sol Low Thinking",1000000,128000],["gpt-6-1-sol-medium","GPT-6.1 Sol Medium Thinking",1000000,128000],["gpt-6-1-sol-high","GPT-6.1 Sol High Thinking",1000000,128000],["gpt-6-1-sol-xhigh","GPT-6.1 Sol XHigh Thinking",1000000,128000],["gpt-6-1-sol-max","GPT-6.1 Sol Max Thinking",1000000,128000],["gpt-6-1-sol-low-priority","GPT-6.1 Sol Low Thinking Fast",1000000,128000],["gpt-6-1-sol-medium-priority","GPT-6.1 Sol Medium Thinking Fast",1000000,128000],["gpt-6-1-sol-high-priority","GPT-6.1 Sol High Thinking Fast",1000000,128000],["gpt-6-1-sol-xhigh-priority","GPT-6.1 Sol XHigh Thinking Fast",1000000,128000],["gpt-6-1-sol-max-priority","GPT-6.1 Sol Max Thinking Fast",1000000,128000]]],
-  ["grok-4.5","Grok 4.5",[],[["grok-4-5-low","Grok 4.5 Low",500000,100000],["grok-4-5-medium","Grok 4.5 Medium",500000,100000],["grok-4-5-high","Grok 4.5 High",500000,100000]]],
+  ["gpt-6-1-terra","GPT-6.1 Terra",[],[["gpt-6-1-terra-low","GPT-6.1 Terra Low Thinking",1000000,128000],["gpt-6-1-terra-medium","GPT-6.1 Terra Medium Thinking",1000000,128000],["gpt-6-1-terra-high","GPT-6.1 Terra High Thinking",1000000,128000],["gpt-6-1-terra-xhigh","GPT-6.1 Terra XHigh Thinking",1000000,128000],["gpt-6-1-terra-max","GPT-6.1 Terra Max Thinking",1000000,128000],["gpt-6-1-terra-low-priority","GPT-6.1 Terra Low Thinking Fast",1000000,128000],["gpt-6-1-terra-medium-priority","GPT-6.1 Terra Medium Thinking Fast",1000000,128000],["gpt-6-1-terra-high-priority","GPT-6.1 Terra High Thinking Fast",1000000,128000],["gpt-6-1-terra-xhigh-priority","GPT-6.1 Terra XHigh Thinking Fast",1000000,128000],["gpt-6-1-terra-max-priority","GPT-6.1 Terra Max Thinking Fast",1000000,128000]]],
   ["grok-4-6","Grok 4.6",[],[["grok-4-6-low","Grok 4.6 Low",500000,100000],["grok-4-6-medium","Grok 4.6 Medium",500000,100000],["grok-4-6-high","Grok 4.6 High",500000,100000],["grok-4-6-xhigh","Grok 4.6 XHigh",500000,100000]]],
   ["grok-4-7","Grok 4.7",[],[["grok-4-7-low","Grok 4.7 Low",500000,100000],["grok-4-7-medium","Grok 4.7 Medium",500000,100000],["grok-4-7-high","Grok 4.7 High",500000,100000],["grok-4-7-xhigh","Grok 4.7 XHigh",500000,100000]]],
-  ["inkling","Inkling",[],[["inkling-none","Inkling None",1048576,131072],["inkling-low","Inkling Low",1048576,131072],["inkling-medium","Inkling Medium",1048576,131072],["inkling-high","Inkling High",1048576,131072],["inkling-xhigh","Inkling X-High",1048576,131072],["inkling-max","Inkling Max",1048576,131072]]],
-  ["glm-5-3-flash","GLM-5.3 Flash",[],[["glm-5-3-flash-low","GLM-5.3 Flash Low",1000000,128000],["glm-5-3-flash-high","GLM-5.3 Flash High",1000000,128000],["glm-5-3-flash-max","GLM-5.3 Flash Max",1000000,128000]]],
+  ["muse-wonder-1-0","Muse Wonder",[],[["muse-wonder-1-0-minimal","Muse Wonder Minimal",1048576,131072],["muse-wonder-1-0-low","Muse Wonder Low",1048576,131072],["muse-wonder-1-0-medium","Muse Wonder Medium",1048576,131072],["muse-wonder-1-0-high","Muse Wonder High",1048576,131072],["muse-wonder-1-0-xhigh","Muse Wonder XHigh",1048576,131072],["muse-wonder-1-0-max","Muse Wonder Max",1048576,131072]]],
+  ["nemotron-3-5-super","Nemotron 3.5 Super",[],[["nemotron-3-5-super-none","Nemotron 3.5 Super None",1048576,65536],["nemotron-3-5-super-medium","Nemotron 3.5 Super Medium",1048576,65536],["nemotron-3-5-super-high","Nemotron 3.5 Super High",1048576,65536]]],
+  ["glm-5-3-flash","GLM-5.3 Flash",[],[["glm-5-3-flash-low","GLM-5.3 Flash Low",1000000,131072],["glm-5-3-flash-high","GLM-5.3 Flash High",1000000,131072],["glm-5-3-flash-max","GLM-5.3 Flash Max",1000000,131072]]],
   ["deepseek-v4-flash","DeepSeek V4 Flash",[],[["deepseek-v4-flash-high","DeepSeek V4 Flash High",1048576,384000],["deepseek-v4-flash-max","DeepSeek V4 Flash Max",1048576,384000]]],
-  ["deepseek-v4-1-flash","DeepSeek V4.1 Flash",[],[["deepseek-v4-1-flash-high","DeepSeek V4.1 Flash High",1048576,384000],["deepseek-v4-1-flash-max","DeepSeek V4.1 Flash Max",1048576,384000]]],
+  ["deepseek-v4-1-flash-1017","DeepSeek V4.1 Flash",[],[["deepseek-v4-1-flash-1017-none","DeepSeek V4.1 Flash None",1048576,384000],["deepseek-v4-1-flash-1017-low","DeepSeek V4.1 Flash Low",1048576,384000],["deepseek-v4-1-flash-1017-high","DeepSeek V4.1 Flash High",1048576,384000],["deepseek-v4-1-flash-1017-max","DeepSeek V4.1 Flash Max",1048576,384000]]],
   ["swe-1.7","SWE-1.7",[],[["swe-1-7","SWE-1.7 Max",262000,128000],["swe-1-7-medium","SWE-1.7 Medium",262000,128000]]],
   ["claude-opus-4.6","Claude Opus 4.6",[],[["claude-opus-4-6","Claude Opus 4.6",200000,128000],["claude-opus-4-6-thinking","Claude Opus 4.6 Thinking",200000,128000],["claude-opus-4-6-1m","Claude Opus 4.6 1M",1000000,128000],["claude-opus-4-6-thinking-1m","Claude Opus 4.6 Thinking 1M",1000000,128000]]],
   ["gpt-5.4","GPT-5.4",[],[["gpt-5-4-none","GPT-5.4 No Thinking",272000,128000],["gpt-5-4-low","GPT-5.4 Low Thinking",272000,128000],["gpt-5-4-medium","GPT-5.4 Medium Thinking",272000,128000],["gpt-5-4-high","GPT-5.4 High Thinking",272000,128000],["gpt-5-4-xhigh","GPT-5.4 XHigh Thinking",272000,128000],["gpt-5-4-none-priority","GPT-5.4 No Thinking Fast",272000,128000],["gpt-5-4-low-priority","GPT-5.4 Low Thinking Fast",272000,128000],["gpt-5-4-medium-priority","GPT-5.4 Medium Thinking Fast",272000,128000],["gpt-5-4-high-priority","GPT-5.4 High Thinking Fast",272000,128000],["gpt-5-4-xhigh-priority","GPT-5.4 XHigh Thinking Fast",272000,128000]]],
   ["gpt-5.5","GPT-5.5",["gpt"],[["gpt-5-5-none","GPT-5.5 No Thinking",272000,128000],["gpt-5-5-low","GPT-5.5 Low Thinking",272000,128000],["gpt-5-5-medium","GPT-5.5 Medium Thinking",272000,128000],["gpt-5-5-high","GPT-5.5 High Thinking",272000,128000],["gpt-5-5-xhigh","GPT-5.5 XHigh Thinking",272000,128000],["gpt-5-5-none-priority","GPT-5.5 No Thinking Fast",272000,128000],["gpt-5-5-low-priority","GPT-5.5 Low Thinking Fast",272000,128000],["gpt-5-5-medium-priority","GPT-5.5 Medium Thinking Fast",272000,128000],["gpt-5-5-high-priority","GPT-5.5 High Thinking Fast",272000,128000],["gpt-5-5-xhigh-priority","GPT-5.5 XHigh Thinking Fast",272000,128000]]],
   ["gpt-5.4-mini","GPT-5.4 Mini",[],[["gpt-5-4-mini-low","GPT-5.4 Mini Low Thinking",400000,128000],["gpt-5-4-mini-medium","GPT-5.4 Mini Medium Thinking",400000,128000],["gpt-5-4-mini-high","GPT-5.4 Mini High Thinking",400000,128000],["gpt-5-4-mini-xhigh","GPT-5.4 Mini XHigh Thinking",400000,128000]]],
   ["claude-sonnet-4.6","Claude Sonnet 4.6",[],[["claude-sonnet-4-6","Claude Sonnet 4.6",200000,128000],["claude-sonnet-4-6-thinking","Claude Sonnet 4.6 Thinking",200000,128000],["claude-sonnet-4-6-1m","Claude Sonnet 4.6 1M",1000000,128000],["claude-sonnet-4-6-thinking-1m","Claude Sonnet 4.6 Thinking 1M",1000000,128000]]],
+  ["kimi-k2.6","Kimi K2.6",[],[["kimi-k2-6","Kimi K2.6",262144,8192]]],
+  ["kimi-k2.7","Kimi K2.7",[],[["kimi-k2-7","Kimi K2.7",262144,16000]]],
+  ["nemotron-3-ultra","Nemotron 3 Ultra",[],[["nemotron-3-ultra-none","Nemotron 3 Ultra None",1000000,32768],["nemotron-3-ultra-medium","Nemotron 3 Ultra Medium",1000000,32768],["nemotron-3-ultra-high","Nemotron 3 Ultra High",1000000,32768]]],
+  ["swe-1.6","SWE-1.6",[],[["swe-1-6","SWE-1.6",200000,128000]]],
+  ["deepseek-v4-pro","DeepSeek V4 Pro",[],[["deepseek-v4-pro-high","DeepSeek V4 Pro High",1048576,384000],["deepseek-v4-pro-max","DeepSeek V4 Pro Max",1048576,384000]]],
+  ["swe-1.7-lightning","SWE-1.7 Lightning",[],[["swe-1-7-lightning","SWE-1.7 Lightning Max",202752,96000],["swe-1-7-lightning-medium","SWE-1.7 Lightning Medium",202752,96000]]],
+  ["inkling","Inkling",[],[["inkling-none","Inkling None",1048576,131072],["inkling-low","Inkling Low",1048576,131072],["inkling-medium","Inkling Medium",1048576,131072],["inkling-high","Inkling High",1048576,131072],["inkling-xhigh","Inkling X-High",1048576,131072],["inkling-max","Inkling Max",1048576,131072]]],
+  ["grok-4.5","Grok 4.5",[],[["grok-4-5-low","Grok 4.5 Low",500000,100000],["grok-4-5-medium","Grok 4.5 Medium",500000,100000],["grok-4-5-high","Grok 4.5 High",500000,100000]]],
   ["gpt-5.2","GPT-5.2",[],[["MODEL_GPT_5_2_LOW","GPT-5.2 Low Thinking",384000,128000],["MODEL_GPT_5_2_MEDIUM","GPT-5.2 Medium Thinking",384000,128000],["MODEL_GPT_5_2_NONE","GPT-5.2 No Thinking",384000,128000],["MODEL_GPT_5_2_HIGH","GPT-5.2 High Thinking",384000,128000],["MODEL_GPT_5_2_XHIGH","GPT-5.2 XHigh Thinking",384000,128000]]],
   ["claude-opus-4.5","Claude Opus 4.5",[],[["MODEL_CLAUDE_4_5_OPUS","Claude Opus 4.5",200000,64000],["MODEL_CLAUDE_4_5_OPUS_THINKING","Claude Opus 4.5 Thinking",200000,64000]]],
   ["Claude Haiku 4.5","Claude Haiku 4.5",[],[["MODEL_PRIVATE_11","Claude Haiku 4.5",200000,64000]]],
@@ -96,14 +105,9 @@ const SNAPSHOT = [
   ["GPT-4.1","GPT-4.1",[],[["MODEL_CHAT_GPT_4_1_2025_04_14","GPT-4.1",1047576,32768]]],
   ["gpt-5.1","GPT-5.1",[],[["MODEL_PRIVATE_12","GPT-5.1 No Thinking",272000,128000],["MODEL_PRIVATE_13","GPT-5.1 Low Thinking",272000,128000],["MODEL_PRIVATE_14","GPT-5.1 Medium Thinking",272000,128000],["MODEL_PRIVATE_15","GPT-5.1 High Thinking",272000,128000]]],
   ["gpt-5.3-codex","GPT-5.3-Codex",["codex"],[["gpt-5-3-codex-low","GPT-5.3-Codex Low",400000,128000],["gpt-5-3-codex-medium","GPT-5.3-Codex Medium",400000,128000],["gpt-5-3-codex-high","GPT-5.3-Codex High",400000,128000],["gpt-5-3-codex-xhigh","GPT-5.3-Codex X-High",400000,128000],["gpt-5-3-codex-low-priority","GPT-5.3-Codex Low Fast",400000,128000],["gpt-5-3-codex-medium-priority","GPT-5.3-Codex Medium Fast",400000,128000],["gpt-5-3-codex-high-priority","GPT-5.3-Codex High Fast",400000,128000],["gpt-5-3-codex-xhigh-priority","GPT-5.3-Codex XHigh Fast",400000,128000]]],
-  ["kimi-k2.6","Kimi K2.6",[],[["kimi-k2-6","Kimi K2.6",262144,8192]]],
-  ["kimi-k2.7","Kimi K2.7",[],[["kimi-k2-7","Kimi K2.7",262144,16000]]],
-  ["nemotron-3-ultra","Nemotron 3 Ultra",[],[["nemotron-3-ultra-none","Nemotron 3 Ultra None",1000000,32768],["nemotron-3-ultra-medium","Nemotron 3 Ultra Medium",1000000,32768],["nemotron-3-ultra-high","Nemotron 3 Ultra High",1000000,32768]]],
-  ["swe-1.6","SWE-1.6",[],[["swe-1-6","SWE-1.6",200000,128000]]],
   ["swe-1.6-fast","SWE-1.6 Fast",[],[["swe-1-6-fast","SWE-1.6 Fast",200000,128000]]],
   ["gemini-3.1-pro","Gemini 3.1 Pro",[],[["gemini-3-1-pro-low","Gemini 3.1 Pro Low Thinking",1048576,65535],["gemini-3-1-pro-high","Gemini 3.1 Pro High Thinking",1048576,65535]]],
   ["gemini-3.0-flash","Gemini 3 Flash",[],[["MODEL_GOOGLE_GEMINI_3_0_FLASH_MINIMAL","Gemini 3 Flash Minimal",1048576,65535],["MODEL_GOOGLE_GEMINI_3_0_FLASH_LOW","Gemini 3 Flash Low",1048576,65535],["MODEL_GOOGLE_GEMINI_3_0_FLASH_MEDIUM","Gemini 3 Flash Medium",1048576,65535],["MODEL_GOOGLE_GEMINI_3_0_FLASH_HIGH","Gemini 3 Flash High",1048576,65535]]],
-  ["deepseek-v4-pro","DeepSeek V4 Pro",[],[["deepseek-v4-pro-high","DeepSeek V4 Pro High",1048576,384000],["deepseek-v4-pro-max","DeepSeek V4 Pro Max",1048576,384000]]],
 ]
 
 const familiesOf = (rows) => rows.map(([uid, label, aliases, vs]) => ({ uid, label, aliases, models: vs.map(([id, name, context, output]) => ({ id, name, context, output })) }))
@@ -339,6 +343,7 @@ function familyImages(f, images) {
 // every other id in SNAPSHOT takes them, which is what a list is told
 // before Devin is asked, or when it can't be.
 const NO_IMAGES = new Set([
+  "swe-2-flash-medium", "swe-2-flash-high", "swe-2-flash-max",
   "glm-5-2", "glm-5-2-max", "glm-5-2-1m", "glm-5-2-max-1m", "glm-5-2-none", "glm-5-2-none-1m",
   "glm-5-3-low", "glm-5-3-high", "glm-5-3-max",
   "inkling-none", "inkling-low", "inkling-medium", "inkling-high", "inkling-xhigh", "inkling-max",
@@ -369,7 +374,7 @@ function parseModelConfigs(b) {
 
 // FREE_TIER is the model_cost_tier (ClientModelConfig's 24) of a model the
 // account's quota doesn't count: the CLI's picker labels its tiers "Low
-// cost", "Med cost", "High cost" and "Free", 1 to 4. On 2026-10-14 Devin
+// cost", "Med cost", "High cost" and "Free", 1 to 4. On 2026-11-05 Devin
 // gave SWE-2's three variants 4 and no other model of its 262 (太陽と向日葵
 // on magpie's Discord: with the quota used up, SWE-2 still answered, but
 // magpie held the account for it as for every other model).
@@ -1201,7 +1206,7 @@ function joinSplitCalls(msgs) {
     const prev = out.at(-1)
     if (m?.role === "assistant" && prev?.role === "assistant" && prev.tool_calls?.length) {
       const content = [textOf(prev.content), textOf(m.content)].filter(Boolean).join("\n\n")
-      out[out.length - 1] = { ...prev, content, devin_thinking: [...signedThinking(prev), ...signedThinking(m)], tool_calls: [...prev.tool_calls, ...(m.tool_calls ?? [])] }
+      out[out.length - 1] = { ...prev, content, devin_thinking: [...replayThinking(prev, true), ...replayThinking(m, true)], tool_calls: [...prev.tool_calls, ...(m.tool_calls ?? [])] }
       continue
     }
     out.push(m)
@@ -1216,6 +1221,18 @@ function joinSplitCalls(msgs) {
 function signedThinking(m) {
   const blocks = m.devin_thinking ?? [{ text: m.reasoning_content, signature: m.reasoning_signature, origin: m.reasoning_origin }]
   return blocks.filter((b) => typeof b?.text === "string" && typeof b.signature === "string" && b.signature && typeof b.origin === "string" && b.origin)
+}
+
+// Keep original signed blocks first-class; non-Claude clients may carry
+// only full reasoning text (upstream 0.1.36). Never invent a signature or
+// turn a Responses summary into the model's full reasoning.
+function replayThinking(m, unsigned) {
+  if (Array.isArray(m.devin_thinking)) return m.devin_thinking.filter((b) =>
+    typeof b?.text === "string" && ((typeof b.signature === "string" && b.signature && typeof b.origin === "string" && b.origin) || (unsigned && !b.signature && !b.origin)))
+  const signed = signedThinking(m)
+  if (signed.length || !unsigned || m.reasoning_signature || m.reasoning_origin) return signed
+  for (const text of [m.reasoning_content, m.reasoning]) if (typeof text === "string" && text) return [{ text }]
+  return []
 }
 
 // effortOf is the effort a request names, as magpie reads it.
@@ -1505,7 +1522,7 @@ function build(chat, uid, key) {
     if (m.role === "assistant") {
       const calls = (m.tool_calls ?? []).map((c) => ({ id: inID(c.id), name: c.function?.name, args: argsOf(c.function?.arguments) }))
       const text = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter((p) => p?.type === "text" && p.text).map((p) => p.text).join("\n\n") : ""
-      const thinking = signedThinking(m)
+      const thinking = replayThinking(m, !claudeModel(uid) && !claudeModel(chat.model))
       if (!text && !calls.length && !thinking.length) continue
       answer()
       // Protobuf's thought/signature/origin fields are singular. An API
@@ -1628,7 +1645,10 @@ function encodeMsg(m) {
   // cache_control, as the Devin CLI 3000.11.234 marks its own prompts
   if (m.cache) b.bytes(8, new PB().varint(1, 1))
   for (const p of m.images ?? []) b.bytes(10, new PB().str(1, p.data).str(2, p.type))
-  if (m.thinking) b.str(11, m.thinking.text).str(12, m.thinking.signature).str(18, m.thinking.origin)
+  if (m.thinking) {
+    b.str(11, m.thinking.text)
+    if (m.thinking.signature) b.str(12, m.thinking.signature).str(18, m.thinking.origin)
+  }
   return b.done()
 }
 
@@ -1908,23 +1928,24 @@ async function complete({ key, server, families }, chat, signal) {
 // This envelope is never sent to Devin: build() sends the original fields.
 const STATE_AAD = Buffer.from("magpie-devin-reasoning-v1")
 const stateKey = (key) => createHash("sha256").update(STATE_AAD).update("\0").update(key).digest()
-function sealThinking(thought, key) {
+function sealThinking(thought, key, unsigned = false) {
   const nonce = randomBytes(12)
   const cipher = createCipheriv("aes-256-gcm", stateKey(key), nonce)
-  cipher.setAAD(STATE_AAD)
+  cipher.setAAD(unsigned ? Buffer.from("magpie-devin-unsigned-v1") : STATE_AAD)
   const body = Buffer.concat([cipher.update(JSON.stringify(thought), "utf8"), cipher.final()])
-  return "dvrs1_" + Buffer.concat([nonce, cipher.getAuthTag(), body]).toString("base64url")
+  return (unsigned ? "dvru1_" : "dvrs1_") + Buffer.concat([nonce, cipher.getAuthTag(), body]).toString("base64url")
 }
 function openThinking(value, key) {
-  if (typeof value !== "string" || !value.startsWith("dvrs1_")) throw new Error("reasoning state is not from this Devin plugin")
+  if (typeof value !== "string" || !/^dvr[su]1_/.test(value)) throw new Error("reasoning state is not from this Devin plugin")
+  const unsigned = value.startsWith("dvru1_")
   try {
     const raw = Buffer.from(value.slice(6), "base64url")
     if (raw.length < 29) throw new Error("short state")
     const cipher = createDecipheriv("aes-256-gcm", stateKey(key), raw.subarray(0, 12))
-    cipher.setAAD(STATE_AAD)
+    cipher.setAAD(unsigned ? Buffer.from("magpie-devin-unsigned-v1") : STATE_AAD)
     cipher.setAuthTag(raw.subarray(12, 28))
     const b = JSON.parse(Buffer.concat([cipher.update(raw.subarray(28)), cipher.final()]).toString("utf8"))
-    if (typeof b.text !== "string" || typeof b.signature !== "string" || !b.signature || typeof b.origin !== "string" || !b.origin) throw new Error("bad state")
+    if (typeof b.text !== "string" || (unsigned ? (b.signature !== undefined || b.origin !== undefined) : (typeof b.signature !== "string" || !b.signature || typeof b.origin !== "string" || !b.origin))) throw new Error("bad state")
     return b
   } catch {
     throw new Error("Devin reasoning state is damaged or belongs to another account")
@@ -1976,7 +1997,8 @@ function responsesChat(req, key) {
   const input = typeof req.input === "string" ? [{ role: "user", content: req.input }] : req.input ?? []
   for (const item of input) {
     if (item.type === "reasoning") {
-      // A foreign/unsigned summary alone is no native signed context.
+      // A summary alone is no full native thought. Only our authenticated
+      // envelope may carry full unsigned reasoning from a SWE reply.
       if (item.encrypted_content) reply().devin_thinking.push(openThinking(item.encrypted_content, key))
     } else if (["function_call", "custom_tool_call", "tool_search_call"].includes(item.type)) {
       const name = item.type === "tool_search_call" ? "tool_search" : item.namespace ? responseFlatName(item.namespace, item.name) : item.name
@@ -2083,6 +2105,14 @@ async function* responsesEvents(it, model, key, named = new Map()) {
       if (current.type === "function_call") current.arguments += e.args.text
       if (current.type !== "custom_tool_call") yield event("response.function_call_arguments.delta", { item_id: current.id, output_index: index, delta: e.args.text })
     } else if (e.stop) {
+      // SWE Flash can return full reasoning without a vendor signature.
+      // Wait to the end so a late signature wins. Seal only native text,
+      // never an incoming client summary; replay uses field 11 alone.
+      if (thinking && sweModel(model)) {
+        if (current?.type !== "reasoning") yield* openItem({ type: "reasoning", id: "rs_" + randomBytes(12).toString("hex"), summary: [] })
+        current.encrypted_content = sealThinking({ text: thinking }, key, true)
+        thinking = ""
+      }
       yield* finishItem()
       response.status = e.stop === "length" ? "incomplete" : "completed"
       if (e.stop === "length") response.incomplete_details = { reason: "max_output_tokens" }
@@ -2183,20 +2213,20 @@ function buildMessages(req, uid, key) {
   for (const b of blocksOf(req.system)) systemBlock(b, "system")
 
   const msgs = []
+  const notices = [] // inline notices wait until all pending results arrive
   let pending = [] // calls the last reply made, not yet answered
   const answer = () => {
     for (const c of pending) msgs.push({ role: TOOL, callID: c.id, text: NO_RESULT })
     pending = []
+    msgs.push(...notices)
+    notices.length = 0
   }
   // Messages alternate roles; two of one role in a row are one turn
   // (yetone/magpie#1275: an agent may split a turn's parallel calls)
   const turns = []
   for (const m of req.messages ?? []) {
-    if (m?.role === "system" || m?.role === "developer") {
-      for (const b of blocksOf(m.content)) systemBlock(b, m.role)
-      continue
-    }
-    if (m?.role !== "user" && m?.role !== "assistant") continue
+    if (!["user", "assistant", "system", "developer"].includes(m?.role)) continue
+    if (["system", "developer"].includes(m.role) && !blocksOf(m.content).some((b) => b?.type === "text" && b.text)) continue
     const last = turns.at(-1)
     if (last?.role === m.role) last.blocks.push(...blocksOf(m.content))
     else turns.push({ role: m.role, blocks: [...blocksOf(m.content)] })
@@ -2261,6 +2291,7 @@ function buildMessages(req, uid, key) {
         const said = texts.join("\n\n") || "(no output)"
         msgs.push({ role: TOOL, callID: pending[i].id, text: b.is_error ? "Error: " + said : said, images, cache: marked(b) || marked(inner.at(-1)) })
         pending.splice(i, 1)
+        if (!pending.length) answer()
         words = null
         continue
       }
@@ -2269,10 +2300,12 @@ function buildMessages(req, uid, key) {
           if (marked(b) && words) words.cache = true
           continue
         }
-        answer()
+        const notice = t.role === "system" || t.role === "developer"
+        if (!notice) answer()
         words = { role: USER, text: b.text, images: held, cache: marked(b) }
         held = []
-        msgs.push(words)
+        if (notice && pending.length) notices.push(words)
+        else msgs.push(words)
         continue
       }
       if (b?.type !== "image") throw new Error(`unsupported Devin content block: ${b?.type}`)
@@ -2497,6 +2530,8 @@ function v2Chat(options, modelID) {
           const meta = p.providerOptions?.devin ?? p.providerMetadata?.devin
           if (typeof meta?.signature === "string" && meta.signature && typeof meta.origin === "string" && meta.origin)
             thinking.push({ text: p.text ?? "", signature: meta.signature, origin: meta.origin })
+          else if (!claudeModel(modelID) && !meta?.signature && typeof p.text === "string" && p.text)
+            thinking.push({ text: p.text })
         }
         else if (p.type === "tool-call")
           calls.push({ id: p.toolCallId, type: "function", function: { name: p.toolName, arguments: JSON.stringify(p.input ?? {}) } })
